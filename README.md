@@ -180,3 +180,26 @@ Each idea card shows either an **example photo** or a **concept illustration**, 
 ## About us
 
 `/about` (linked next to Overview in the workspace and in the public navigation) explains the problem, the three steps, and what the app actually does, with a material-to-product animation built from the example photos. Motion respects reduced-motion settings.
+
+## Deploying to Vercel
+
+Locally the AI runs in your own Ollama. On Vercel there is no Ollama, so the server uses the **Ollama Cloud API** (`https://ollama.com`) instead — chosen automatically when the `VERCEL` environment variable is present (Vercel sets it).
+
+How it fits together:
+
+- `vercel.json` builds the Vite frontend into `dist/` and sends every `/api/*` request to `api/index.js`, which runs the same Express app as `npm run dev` (`server/app.js`). The function may run up to 300 s (the Hobby maximum); AI calls give up after 270 s with a clear "took too long" message instead of a cut connection.
+- The API key is read only on the server (`OLLAMA_API_KEY`) and sent only to `ollama.com` in an `Authorization: Bearer` header. It never appears in the frontend, in API responses or in logs. Do not create a `VITE_` variable for it — those are bundled into browser code.
+- Default cloud model: `gemma4:31b` — listed by `https://ollama.com/api/tags` and reported by `/api/show` with `vision` (photo input). Other current cloud models with vision include `kimi-k2.6`, `mistral-large-4` and `minimax-m3`; set `OLLAMA_MODEL` to switch.
+- Photos are downscaled to 1024 px in the browser before analysis, which keeps uploads under Vercel's 4.5 MB request limit.
+- Settings → AI engine and `GET /api/health` show the provider, model and what to fix (missing key, rejected key, rate limit, unknown model).
+
+**Environment variables (Vercel → Project → Settings → Environment Variables):**
+
+| Name | Required | Value |
+|---|---|---|
+| `OLLAMA_API_KEY` | yes | your key from https://ollama.com/settings/keys |
+| `OLLAMA_MODEL` | no | defaults to `gemma4:31b` on Ollama Cloud |
+
+Check the key before deploying: put `OLLAMA_API_KEY` in your local `.env` (git-ignored) and run `npm run test:cloud` — the full live suite (photo scan, ideas, build plan, selling guide, assistant) against Ollama Cloud.
+
+**Storage limitation:** the app stores inventory and projects in SQLite. On Vercel the only writable place is `/tmp`, which is temporary and not shared between server instances — saved projects can disappear or be missing on the next request. The AI works fully; for lasting data on Vercel, move the database to a hosted service (e.g. Turso/libSQL or Postgres), or run the app on a host with a persistent disk (`npm run build && npm start`). Settings shows a warning while storage is temporary.

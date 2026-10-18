@@ -6,11 +6,15 @@ import { Button, Banner } from './ui.jsx';
 const MAX_SIDE = 1600;
 
 /** Downscale an image source to ≤ MAX_SIDE px JPEG. Keeps uploads small and strips EXIF metadata. */
-export async function normaliseImage(source) {
+// Photos sent for AI analysis: the model gains nothing above ~1024 px (same token cost, slower
+// to encode), and it keeps uploads well under hosting limits (Vercel: 4.5 MB per request).
+export const AI_MAX_SIDE = 1024;
+
+export async function normaliseImage(source, maxSide = MAX_SIDE) {
   const bitmap = source instanceof Blob ? await createImageBitmap(source) : source;
   const w = bitmap.videoWidth || bitmap.width;
   const h = bitmap.videoHeight || bitmap.height;
-  const scale = Math.min(1, MAX_SIDE / Math.max(w, h));
+  const scale = Math.min(1, maxSide / Math.max(w, h));
   const canvas = document.createElement('canvas');
   canvas.width = Math.round(w * scale);
   canvas.height = Math.round(h * scale);

@@ -11,7 +11,8 @@
     "build": "vite build",
     "start": "node server/index.js",
     "test": "node --test --test-concurrency=1 tests/*.test.js",
-    "test:live": "node --test --test-concurrency=1 --test-timeout=3600000 tests/live/*.test.js"
+    "test:live": "node --test --test-concurrency=1 --test-timeout=3600000 tests/live/*.test.js",
+    "test:cloud": "node tests/live/run-cloud.mjs"
   },
   "engines": {
     "node": ">=22.5"

@@ -16,7 +16,8 @@ core.get('/health', async (_req, res) => {
   // pulling the model later is picked up without restarting this server.
   if (['unreachable', 'model_unavailable', 'error', 'unchecked', 'out_of_memory'].includes(aiStatus().state)) await probeAI();
   // ai.status is safe to expose: it names the env var / model to fix, never a secret.
-  res.json({ ok: true, ai: { enabled: aiEnabled(), model: aiEnabled() ? config.ai.model : null, status: aiStatus() }, shopify: { configured: shopifyConfigured() } });
+  // storage.temporary: on Vercel the SQLite file lives in /tmp and can disappear (see README).
+  res.json({ ok: true, ai: { enabled: aiEnabled(), model: aiEnabled() ? config.ai.model : null, status: aiStatus() }, storage: { temporary: config.dbIsTemporary }, shopify: { configured: shopifyConfigured() } });
 });
 
 /* ---------- settings ---------- */

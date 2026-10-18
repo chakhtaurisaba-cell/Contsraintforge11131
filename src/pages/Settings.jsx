@@ -47,7 +47,7 @@ export default function Settings() {
             {health?.ai?.enabled ? (
               <>
                 <Badge tone="ok">{health.ai.status?.state === 'ready' ? 'Connected' : 'Configured'}</Badge>
-                <p className="small text-2" style={{ marginTop: 8 }}>Model: <span className="mono">{health.ai.model}</span>, running locally in Ollama. Web search: {health.ai.status?.search?.available ? health.ai.status.search.provider : 'off'}. Used for photo recognition, ideation, build plans, channel strategy, supplier web search, advisor explanations and the assistant.</p>
+                <p className="small text-2" style={{ marginTop: 8 }}>Model: <span className="mono">{health.ai.model}</span>, {health.ai.status?.provider === 'ollama-cloud' ? 'running on Ollama Cloud' : 'running locally in Ollama'}. Web search: {health.ai.status?.search?.available ? health.ai.status.search.provider : 'off'}. Used for photo recognition, ideation, build plans, channel strategy, supplier web search, advisor explanations and the assistant.</p>
                 {health.ai.status?.maintainerHint && <p className="xs warn-text" style={{ marginTop: 6 }}>{health.ai.status.maintainerHint}</p>}
               </>
             ) : (
@@ -62,8 +62,11 @@ export default function Settings() {
           </Card>
           <Card title="Privacy" actions={<ShieldCheck size={16} className="muted" />}>
             <ul className="list small">
-              <li>Data is stored in a local SQLite database on the server machine.</li>
-              <li>Photos are resized in your browser, sent to the local vision model (Ollama, on this machine) only when you press “Identify”, and are not stored.</li>
+              {health?.storage?.temporary
+                ? <li className="warn-text">This deployment keeps data in temporary storage: projects and inventory can disappear when the server restarts. See README → Deploying to Vercel.</li>
+                : <li>Data is stored in a local SQLite database on the server machine.</li>}
+              {health?.ai?.status?.provider === 'ollama-cloud' && <li>AI requests (including photos you choose to analyse) are sent to Ollama Cloud.</li>}
+              <li>Photos are resized in your browser, sent to the vision model ({health?.ai?.status?.provider === 'ollama-cloud' ? 'Ollama Cloud' : 'Ollama, on this machine'}) only when you press “Identify”, and are not stored.</li>
               <li>API keys and store tokens stay on the server.</li>
             </ul>
           </Card>

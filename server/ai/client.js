@@ -12,9 +12,11 @@ import { z } from 'zod';
 import { config } from '../config.js';
 import { webSearch, fetchPage, searchAvailable, searchStatus } from './search.js';
 
-const status = { state: config.ai.enabled ? 'unchecked' : 'unconfigured', checkedAt: null, detail: null, capabilities: null };
+// Ollama Cloud without a key can't work; say so instead of failing on every request.
+const missingKey = config.ai.cloud && !config.ai.apiKey;
+const status = { state: !config.ai.enabled ? 'unconfigured' : missingKey ? 'missing_key' : 'unchecked', checkedAt: null, detail: null, capabilities: null };
 
-export const aiConfigured = () => config.ai.enabled;
+export const aiConfigured = () => config.ai.enabled && !missingKey;
 /** True when AI calls can be attempted (configured and the model is known to exist). */
 export const aiEnabled = () => aiConfigured() && status.state !== 'model_unavailable';
 
@@ -25,19 +27,29 @@ const MAINTAINER_HINTS = {
   no_vision: () => `Model "${config.ai.model}" cannot read images, so photo scanning will not work. Use a vision model such as qwen3-vl:4b (set OLLAMA_MODEL).`,
   out_of_memory: () => `Model "${config.ai.model}" needs more memory than is free. Close other apps, lower OLLAMA_NUM_CTX, or use a smaller model.`,
   error: () => status.detail,
+  missing_key: 'Ollama Cloud needs an API key: set OLLAMA_API_KEY on the server (Vercel → Project → Settings → Environment Variables), then redeploy.',
+  unauthorized: 'Ollama Cloud rejected the API key. Check OLLAMA_API_KEY (create one at https://ollama.com/settings/keys), then redeploy.',
+  rate_limited: 'Ollama Cloud is rate-limiting this account (usage limit reached). Wait, or upgrade the Ollama plan.',
+};
+// Cloud wording for hints that mention installing models locally.
+const CLOUD_HINTS = {
+  unreachable: () => `Ollama Cloud (${config.ai.baseUrl}) is not reachable from the server. Check the deployment's network access, then try again.`,
+  model_unavailable: () => `Model "${config.ai.model}" is not available on Ollama Cloud. Set OLLAMA_MODEL to a model listed at https://ollama.com/api/tags that supports images (default: gemma4:31b).`,
+  no_vision: () => `Model "${config.ai.model}" cannot read images, so photo scanning will not work. Use an Ollama Cloud model with vision, such as gemma4:31b.`,
 };
 
 export function aiStatus() {
-  const hint = MAINTAINER_HINTS[status.state];
+  const hint = (config.ai.cloud && CLOUD_HINTS[status.state]) || MAINTAINER_HINTS[status.state];
   const search = searchStatus();
   return {
     configured: aiConfigured(),
     available: aiEnabled(),
     state: status.state,
-    provider: 'ollama',
+    provider: config.ai.provider,
     host: config.ai.baseUrl,
     model: config.ai.model,
-    credentialSource: aiConfigured() ? 'Local Ollama (no API key)' : null,
+    // Names where the credential comes from — never the key itself.
+    credentialSource: !aiConfigured() ? null : config.ai.cloud ? 'OLLAMA_API_KEY (server-side)' : 'Local Ollama (no API key)',
     capabilities: status.capabilities,
     search,
     checkedAt: status.checkedAt,
@@ -171,7 +183,11 @@ async function ollama(path, body, { method = 'POST', timeoutMs = config.ai.timeo
   try {
     res = await httpRequest(`${config.ai.baseUrl}${path}`, {
       method,
-      headers: body ? { 'content-type': 'application/json' } : undefined,
+      headers: {
+        ...(body ? { 'content-type': 'application/json' } : {}),
+        // Ollama Cloud: the server-side key. Never logged, never sent anywhere but ollama.com.
+        ...(config.ai.apiKey ? { authorization: `Bearer ${config.ai.apiKey}` } : {}),
+      },
       body: body ? JSON.stringify(streaming ? { ...body, stream: true } : body) : undefined,
       signal: controller.signal,
     });
@@ -180,7 +196,7 @@ async function ollama(path, body, { method = 'POST', timeoutMs = config.ai.timeo
     if (clientGone?.aborted) throw new AIError('The request was cancelled.', 499, 'cancelled');
     if (controller.signal.aborted) throw timeoutError();
     setState('unreachable', err?.code || err?.message);
-    throw new AIError('The AI service could not be reached. Make sure Ollama is running, then try again.', 503, 'ai_unreachable', true);
+    throw new AIError(config.ai.cloud ? 'The AI service could not be reached. Please try again in a moment.' : 'The AI service could not be reached. Make sure Ollama is running, then try again.', 503, 'ai_unreachable', true);
   }
   let data = null;
   let raw = '';
@@ -214,9 +230,17 @@ async function ollama(path, body, { method = 'POST', timeoutMs = config.ai.timeo
       throw Object.assign(new AIError('The AI model could not load on the GPU.', 503, 'ai_unavailable_temp', true), { gpuRetry: true });
     }
     if (/llama-server process has terminated|CUDA error/i.test(msg)) throw new AIError('The AI model crashed while loading. Please try again.', 503, 'ai_unavailable_temp', true);
+    if (res.status === 401 || res.status === 403) {
+      setState('unauthorized', msg);
+      throw new AIError('The AI service isn’t available right now (it could not be authorised). Please try again later.', 503, 'ai_unauthorized');
+    }
+    if (res.status === 429) {
+      setState('rate_limited', msg);
+      throw new AIError('The AI service is busy right now. Please wait a minute and try again.', 503, 'ai_rate_limited', true);
+    }
     if (res.status === 404 && /model|not found/i.test(msg)) {
       setState('model_unavailable', msg);
-      throw new AIError('AI analysis is unavailable: the AI model isn’t installed on this computer yet.', 503, 'ai_unavailable');
+      throw new AIError(config.ai.cloud ? 'AI analysis is unavailable: the configured AI model isn’t available.' : 'AI analysis is unavailable: the AI model isn’t installed on this computer yet.', 503, 'ai_unavailable');
     }
     if (/does not support (images|vision)|missing data required for image|image input/i.test(msg)) {
       throw new AIError('The installed AI model can’t read photos. You can still add items by hand.', 422, 'ai_no_vision');
@@ -250,7 +274,8 @@ async function chat(body, opts) {
  * doesn't pay the load time (and the model isn't reloaded because options differ).
  */
 export async function warmModel() {
-  if (!aiEnabled()) return;
+  // Cloud models are always loaded; there is nothing to warm.
+  if (!aiEnabled() || config.ai.cloud) return;
   const t = Date.now();
   const load = (options) => ollama('/api/generate', { model: config.ai.model, keep_alive: config.ai.keepAlive, options }, { timeoutMs: 120000 });
   try {
@@ -269,14 +294,16 @@ export async function warmModel() {
 /** Checks that Ollama is running and the model is installed (no generation). */
 export async function probeAI() {
   if (!aiConfigured()) {
-    setState('unconfigured');
+    setState(missingKey && config.ai.enabled ? 'missing_key' : 'unconfigured');
     return aiStatus();
   }
   try {
     await ollama('/api/version', null, { method: 'GET', timeoutMs: 5000 });
     const show = await ollama('/api/show', { model: config.ai.model }, { timeoutMs: 20000 });
     status.capabilities = Array.isArray(show?.capabilities) ? show.capabilities : null;
-    setState(status.capabilities && !status.capabilities.includes('vision') ? 'no_vision' : 'ready');
+    // /api/show works without a valid cloud key, so it can't clear a rejected key or a rate
+    // limit — only a successful AI request does that.
+    if (!['unauthorized', 'rate_limited'].includes(status.state)) setState(status.capabilities && !status.capabilities.includes('vision') ? 'no_vision' : 'ready');
   } catch (err) {
     if (!(err instanceof AIError) || status.state === 'unchecked') setState('error', err?.message);
   }
@@ -326,7 +353,8 @@ function userMessage(content) {
 const thinkParam = (effort) => (status.capabilities?.includes('thinking') ? { think: config.ai.think && effort !== 'low' } : {});
 const stripThink = (s = '') => s.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
 
-const baseRequest = () => ({ model: config.ai.model, stream: false, keep_alive: config.ai.keepAlive });
+// keep_alive only matters for a local server (cloud models stay loaded).
+const baseRequest = () => ({ model: config.ai.model, stream: false, ...(config.ai.cloud ? {} : { keep_alive: config.ai.keepAlive }) });
 
 // Measured on qwen3-vl: a photo of up to ~1024 px costs ~1 050 prompt tokens, a 1600 px photo ~1 900.
 const IMAGE_TOKENS = 1100;

@@ -6,7 +6,7 @@ import { useApi, useAction } from '../hooks/useApi.js';
 import { useApp } from '../context/AppContext.jsx';
 import { api } from '../api/client.js';
 import { Page, Card, Button, Badge, Banner, Field, NumberInput, Modal, Empty, LoadingBlock, DimensionTag, Tabs, Stagger, StaggerItem } from '../components/ui.jsx';
-import { CameraCapture } from '../components/Camera.jsx';
+import { CameraCapture, normaliseImage, AI_MAX_SIDE } from '../components/Camera.jsx';
 import { CalibrationTool } from '../components/Calibration.jsx';
 import { InventoryItemForm, dimsSummary } from '../components/InventoryEditor.jsx';
 import { checkImageQuality } from '../utils/imageQuality.js';
@@ -166,7 +166,9 @@ export default function Scan() {
 
   async function analyse() {
     const fd = new FormData();
-    images.forEach((img, i) => fd.append('images', img.blob, `photo-${i}.jpg`));
+    // The full-size photos stay in the browser for measuring; a 1024 px copy is analysed.
+    const small = await Promise.all(images.map((img) => normaliseImage(img.blob, AI_MAX_SIDE).then((r) => (URL.revokeObjectURL(r.url), r.blob))));
+    small.forEach((blob, i) => fd.append('images', blob, `photo-${i}.jpg`));
     fd.append('goal', goal);
     if (hint) fd.append('hint', hint);
     if (known.objectName && known.value) fd.append('known', JSON.stringify(known));
