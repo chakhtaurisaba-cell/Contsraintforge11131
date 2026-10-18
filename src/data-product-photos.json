@@ -1,0 +1,232 @@
+{
+  "wall_shelf-wood": {
+    "src": "/products/wall_shelf-wood.jpg",
+    "title": "Wooden shelf with wooden brackets affixed to wall at angle",
+    "author": "Cupofjoy",
+    "license": "CC0",
+    "licenseUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:Wooden_shelf_with_wooden_brackets_affixed_to_wall_at_angle.jpg",
+    "source": "Wikimedia Commons",
+    "position": "center 60%"
+  },
+  "box-wood": {
+    "src": "/products/box-wood.jpg",
+    "title": "Shoe shine box",
+    "author": "TimWilson",
+    "license": "CC BY 2.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/2.0/",
+    "sourceUrl": "https://www.flickr.com/photos/70816538@N00/6578698069",
+    "source": "Openverse / Flickr",
+    "position": "center"
+  },
+  "box-cardboard": {
+    "src": "/products/box-cardboard.jpg",
+    "title": "Brown paper packages tied up with strings.",
+    "author": "katerha",
+    "license": "CC BY 2.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/2.0/",
+    "sourceUrl": "https://www.flickr.com/photos/8489692@N03/12270472734",
+    "source": "Openverse / Flickr",
+    "position": "center"
+  },
+  "crate-wood": {
+    "src": "/products/crate-wood.jpg",
+    "title": "Wooden crates for supermarkets",
+    "author": "Fumikas Sagisavas",
+    "license": "CC0",
+    "licenseUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:Wooden_crates_for_supermarkets.jpg",
+    "source": "Wikimedia Commons",
+    "position": "center"
+  },
+  "tray-wood": {
+    "src": "/products/tray-wood.jpg",
+    "title": "DZ6 0558 A trio of glass shakers and a small jar of sauce sit on a wooden tray on a restaurant table softly lit against ",
+    "author": "PattayaPatrol",
+    "license": "CC BY-SA 4.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:DZ6_0558_A_trio_of_glass_shakers_and_a_small_jar_of_sauce_sit_on_a_wooden_tray_on_a_restaurant_table_softly_lit_against_a_blurred_cozy_bar_background.jpg",
+    "source": "Wikimedia Commons",
+    "position": "center 70%"
+  },
+  "frame-wood": {
+    "src": "/products/frame-wood.jpg",
+    "title": "Frame, picture (AM 1962.98)",
+    "author": "Unknown",
+    "license": "CC BY 4.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:Frame,_picture_(AM_1962.98).jpg",
+    "source": "Wikimedia Commons",
+    "position": "center"
+  },
+  "stand-wood": {
+    "src": "/products/stand-wood.jpg",
+    "title": "Souvenir. The phone stand. The Obelisk to the Hero City of Leningrad",
+    "author": "Walter-Walter T.T.",
+    "license": "CC0",
+    "licenseUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:Souvenir._The_phone_stand._The_Obelisk_to_the_Hero_City_of_Leningrad.jpg",
+    "source": "Wikimedia Commons",
+    "position": "center"
+  },
+  "stand-cardboard": {
+    "src": "/products/stand-cardboard.jpg",
+    "title": "cardboard phone holder DSC_0609",
+    "author": "el cajon yacht club",
+    "license": "CC BY 2.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/2.0/",
+    "sourceUrl": "https://www.flickr.com/photos/60944636@N00/9718842068",
+    "source": "Openverse / Flickr",
+    "position": "center 40%"
+  },
+  "stand-cardboard-laptop": {
+    "src": "/products/stand-cardboard-laptop.jpg",
+    "title": "Suporte para laptop feito com caixa de papelão",
+    "author": "wagnertamanaha",
+    "license": "CC BY-SA 2.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.0/",
+    "sourceUrl": "https://www.flickr.com/photos/98899298@N00/4921361172",
+    "source": "Openverse / Flickr",
+    "position": "center"
+  },
+  "plant_stand-wood": {
+    "src": "/products/plant_stand-wood.jpg",
+    "title": "Variety of potted plants displayed on a wooden plant stand at a green market in a lively indoor space",
+    "author": "Shixart1985",
+    "license": "CC BY 2.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:Variety_of_potted_plants_displayed_on_a_wooden_plant_stand_at_a_green_market_in_a_lively_indoor_space.jpg",
+    "source": "Wikimedia Commons",
+    "position": "center"
+  },
+  "plant_pot-concrete": {
+    "src": "/products/plant_pot-concrete.jpg",
+    "title": "Pink chrysanthemum 'Mei-Kyo' in Övre Tuntorp",
+    "author": "W.carter",
+    "license": "CC BY-SA 4.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:Pink_chrysanthemum_%27Mei-Kyo%27_in_%C3%96vre_Tuntorp.jpg",
+    "source": "Wikimedia Commons",
+    "position": "center"
+  },
+  "bird_feeder-plastic": {
+    "src": "/products/bird_feeder-plastic.jpg",
+    "title": "Nuthatch Invasion (30779101141)",
+    "author": "Per from Kaministiquia, Canada",
+    "license": "CC BY-SA 2.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.0",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:Nuthatch_Invasion_(30779101141).jpg",
+    "source": "Wikimedia Commons",
+    "position": "center"
+  },
+  "bird_feeder-wood": {
+    "src": "/products/bird_feeder-wood.jpg",
+    "title": "Old rickety bird feeder - with cat",
+    "author": "W.carter",
+    "license": "CC0",
+    "licenseUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:Old_rickety_bird_feeder_-_with_cat.jpg",
+    "source": "Wikimedia Commons",
+    "position": "center 30%"
+  },
+  "birdhouse-wood": {
+    "src": "/products/birdhouse-wood.jpg",
+    "title": "Wooden Birdhouse",
+    "author": "Santeri Viinamäki",
+    "license": "CC BY 3.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/3.0",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:Wooden_Birdhouse.JPG",
+    "source": "Wikimedia Commons",
+    "position": "center"
+  },
+  "candle_jar-glass": {
+    "src": "/products/candle_jar-glass.jpg",
+    "title": "Mason Jar Candle Closeup (1 of 1)",
+    "author": "genocansing",
+    "license": "CC BY 2.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/2.0/",
+    "sourceUrl": "https://www.flickr.com/photos/132637638@N06/23131680194",
+    "source": "Openverse / Flickr",
+    "position": "center"
+  },
+  "jar-glass": {
+    "src": "/products/jar-glass.jpg",
+    "title": "Mt. Vernon, MO - glass jars with small fasteners (14926095199)",
+    "author": "LWYang from USA",
+    "license": "CC BY 2.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:Mt._Vernon,_MO_-_glass_jars_with_small_fasteners_(14926095199).jpg",
+    "source": "Wikimedia Commons",
+    "position": "center"
+  },
+  "vase-glass": {
+    "src": "/products/vase-glass.jpg",
+    "title": "Lisboa, Portugal (Unsplash ANyAligrI6Y)",
+    "author": "Paulo Rodrigues impar",
+    "license": "CC0",
+    "licenseUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:Lisboa,_Portugal_(Unsplash_ANyAligrI6Y).jpg",
+    "source": "Wikimedia Commons",
+    "position": "center 30%"
+  },
+  "pouch-fabric": {
+    "src": "/products/pouch-fabric.jpg",
+    "title": "zipper pouch",
+    "author": "normanack",
+    "license": "CC BY 2.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/2.0/",
+    "sourceUrl": "https://www.flickr.com/photos/29278394@N00/2812601228",
+    "source": "Openverse / Flickr",
+    "position": "center"
+  },
+  "tote_bag-fabric": {
+    "src": "/products/tote_bag-fabric.jpg",
+    "title": "Reversible Tote",
+    "author": "anniehp",
+    "license": "CC BY 2.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/2.0/",
+    "sourceUrl": "https://www.flickr.com/photos/41869756@N05/5465611182",
+    "source": "Openverse / Flickr",
+    "position": "center 40%"
+  },
+  "lamp-wood": {
+    "src": "/products/lamp-wood.jpg",
+    "title": "Elegant lamp on table near sofas in a cozy interior space",
+    "author": "Shixart1985",
+    "license": "CC BY 2.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:Elegant_lamp_on_table_near_sofas_in_a_cozy_interior_space.jpg",
+    "source": "Wikimedia Commons",
+    "position": "center 40%"
+  },
+  "led_light-plastic": {
+    "src": "/products/led_light-plastic.jpg",
+    "title": "LED nightlight with switch",
+    "author": "Tetris L",
+    "license": "CC BY-SA 3.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:LED_nightlight_with_switch.JPG",
+    "source": "Wikimedia Commons",
+    "position": "center"
+  },
+  "stool-wood": {
+    "src": "/products/stool-wood.jpg",
+    "title": "Wooden stool made in 1930 in France",
+    "author": "Ditigibt",
+    "license": "Public domain",
+    "licenseUrl": "",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:Wooden_stool_made_in_1930_in_France.jpeg",
+    "source": "Wikimedia Commons",
+    "position": "center"
+  },
+  "sign-wood": {
+    "src": "/products/sign-wood.jpg",
+    "title": "Beautiful Sign in Tashkent Botanical Garden",
+    "author": "Humoyun Mehridinov",
+    "license": "CC BY-SA 4.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:Beautiful_Sign_in_Tashkent_Botanical_Garden.jpg",
+    "source": "Wikimedia Commons",
+    "position": "center"
+  }
+}
