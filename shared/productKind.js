@@ -57,7 +57,8 @@ export function kindFromText(idea = {}) {
  * summary (a summary like "…a cosy glow, like candlelight" must not turn a pillow into a candle).
  */
 export function resolveKind(idea = {}) {
-  const fromName = kindIn(idea.name);
+  // What it holds isn't what it is: "Wooden stand for glass jars" is a stand.
+  const fromName = kindIn(String(idea.name || '').replace(/\b(for|to hold|holding)\b.*$/i, '')) || kindIn(idea.name);
   if (fromName) return fromName;
   const k = idea.visualKind || idea.visualShape;
   let kind = KIND_SET.has(k) ? k : LEGACY[k] || 'generic';

@@ -94,7 +94,8 @@ export function checkFeasibility(idea, owned, tools = []) {
   const toolText = tools.join(' | ');
 
   // A name that states a material ("Cardboard box") must match what it is really made of.
-  const named = materialClass({ name: idea.name });
+  // (Only the product's own words count: "stand for glass jars" is not made of glass.)
+  const named = materialClass({ name: String(idea.name || '').replace(/\b(for|to hold|holding|with)\b.*$/i, '') });
   if (NAMEABLE.has(named) && !classes.includes(named)) {
     return { ...out, ok: false, reason: `It’s called ${CLASS_LABEL[named] || named}, but it would be made from ${primaryOwned.item.name}.` };
   }

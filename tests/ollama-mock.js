@@ -33,7 +33,7 @@ export function startOllamaMock(onChat, { capabilities = ['completion', 'vision'
       // Split the content over two chunks, like a real stream.
       const content = msg.content || '';
       const half = Math.floor(content.length / 2);
-      res.write(`${JSON.stringify({ model: body.model, message: { role: 'assistant', content: content.slice(0, half) }, done: false })}\n`);
+      res.write(`${JSON.stringify({ model: body.model, message: { role: 'assistant', content: content.slice(0, half), ...(msg.thinking ? { thinking: msg.thinking } : {}) }, done: false })}\n`);
       res.write(`${JSON.stringify({ model: body.model, message: { role: 'assistant', content: content.slice(half), ...(msg.tool_calls ? { tool_calls: msg.tool_calls } : {}) }, done: false })}\n`);
       res.end(`${JSON.stringify({ model: body.model, message: { role: 'assistant', content: '' }, done: true, done_reason: msg.done_reason || 'stop', eval_count: 10 })}\n`);
     });

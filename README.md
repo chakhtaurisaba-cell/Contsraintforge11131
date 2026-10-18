@@ -192,6 +192,7 @@ How it fits together:
 - Default cloud model: `gemma4:31b` — listed by `https://ollama.com/api/tags` and reported by `/api/show` with `vision` (photo input). Other current cloud models with vision include `kimi-k2.6`, `mistral-large-4` and `minimax-m3`; set `OLLAMA_MODEL` to switch.
 - Photos are downscaled to 1024 px in the browser before analysis, which keeps uploads under Vercel's 4.5 MB request limit.
 - Settings → AI engine and `GET /api/health` show the provider, model and what to fix (missing key, rejected key, rate limit, unknown model).
+- On Ollama Cloud the app does not rely on structured outputs (`AI_JSON_MODE=prompt`): the JSON shape is described in the prompt, the reply is prefilled with its opening (`{"ideas": [ {`) so the model writes entries, and the answer is extracted from prose or code fences, repaired (trailing commas, quotes, numbers sent as text, missing fields) and validated, with one corrective retry. `AI_DEBUG=1` logs raw replies to the Vercel logs.
 
 **Environment variables (Vercel → Project → Settings → Environment Variables):**
 

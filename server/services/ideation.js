@@ -324,7 +324,9 @@ async function aiIdeas(request, inventory, { nudge = '', onDrafted } = {}) {
     system: SYSTEM_IDEATION,
     content: `Resources and constraints (JSON):\n${JSON.stringify(payload)}\n\nPropose ${max} genuinely different products these resources can make — different purposes, not variations of one product (each idea a different visualKind where possible), and use the other owned items too, not only the main material. Return fewer only if the materials truly cannot support ${max}. Keep every text field short.${nudge ? `\n\n${nudge}` : ''}`,
     // A compact idea is ~250–350 tokens; the budget leaves room without allowing runaway output.
-    schema: IdeaResult.extend({ ideas: IdeaResult.shape.ideas.max(max) }),
+    // The description reaches the model in prompt mode (no schema enforcement), where a small
+    // model otherwise tends to answer with an empty list.
+    schema: IdeaResult.extend({ ideas: IdeaResult.shape.ideas.max(max).describe(`${max} different products these materials can make — always propose some; an empty list only if nothing at all is possible`) }),
     effort: 'medium',
     maxTokens: 400 * max + 300,
     label: 'product ideas',

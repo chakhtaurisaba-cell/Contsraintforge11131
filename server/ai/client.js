@@ -11,6 +11,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { z } from 'zod';
 import { config } from '../config.js';
 import { webSearch, fetchPage, searchAvailable, searchStatus } from './search.js';
+import { extractJSON, conformToSchema, schemaPrompt, prefillFor } from './json.js';
 
 // Ollama Cloud without a key can't work; say so instead of failing on every request.
 const missingKey = config.ai.cloud && !config.ai.apiKey;
@@ -350,6 +351,21 @@ function userMessage(content) {
 }
 
 /** Thinking is opt-in (OLLAMA_THINK=true): it is slow on small local GPUs. */
+/**
+ * Ollama Cloud runs as short-lived serverless instances that may never call /api/health, so the
+ * model's capabilities are fetched once per instance on first use. Knowing them lets the client
+ * switch thinking off explicitly (a thinking model otherwise reasons first and may put its
+ * answer in the reasoning instead of the reply).
+ */
+let capsPromise = null;
+async function ensureCapabilities() {
+  if (status.capabilities || !config.ai.cloud) return;
+  capsPromise ||= ollama('/api/show', { model: config.ai.model }, { timeoutMs: 15000 })
+    .then((show) => { if (Array.isArray(show?.capabilities)) status.capabilities = show.capabilities; })
+    .catch(() => { capsPromise = null; });
+  await capsPromise;
+}
+
 const thinkParam = (effort) => (status.capabilities?.includes('thinking') ? { think: config.ai.think && effort !== 'low' } : {});
 const stripThink = (s = '') => s.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
 
@@ -388,13 +404,20 @@ export async function structured({ system, content, schema, effort = 'medium', m
   if (user.images?.length && status.capabilities && !status.capabilities.includes('vision')) {
     throw new AIError('The installed AI model can’t read photos. You can still add items by hand.', 422, 'ai_no_vision');
   }
-  const promptTokens = estimatePromptTokens(system, user);
+  await ensureCapabilities();
+  const js = jsonSchemaFor(schema);
+  // Prompt mode: the JSON shape is described in the instructions instead of sent as `format`.
+  const promptMode = config.ai.jsonMode === 'prompt';
+  const sys = promptMode ? `${system}\n\n${schemaPrompt(js)}` : system;
+  const prefill = promptMode ? prefillFor(js) : '';
+  const promptTokens = estimatePromptTokens(sys, user);
   let numPredict = maxTokens;
+  let correction = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
     const data = await chat({
       ...baseRequest(),
-      format: jsonSchemaFor(schema),
-      messages: [{ role: 'system', content: system }, user],
+      ...(promptMode ? {} : { format: js }),
+      messages: [{ role: 'system', content: sys }, user, ...(correction ? [correction] : []), ...(prefill ? [{ role: 'assistant', content: prefill }] : [])],
       options: modelOptions({ num_ctx: contextFor(promptTokens, numPredict), num_predict: numPredict, temperature: 0.3 }),
       ...thinkParam(effort),
     }, { label, onToken: onProgress });
@@ -407,16 +430,19 @@ export async function structured({ system, content, schema, effort = 'medium', m
       }
       throw new AIError('The AI response was cut off. Try fewer photos or a smaller request.', 502, 'ai_truncated', true);
     }
-    const out = stripThink(data?.message?.content || '');
-    let value;
-    try {
-      value = JSON.parse(out);
-    } catch {
-      value = extractJSON(out);
-    }
-    const check = schema.safeParse(value);
-    if (check.success) return check.data;
-    console.warn('[ai] output failed validation:', check.error ? check.error.issues.slice(0, 3).map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') : 'not JSON');
+    const content = stripThink(data?.message?.content || '');
+    // AI_DEBUG=1 logs raw replies (to diagnose a model's output format, e.g. in Vercel logs).
+    if (process.env.AI_DEBUG === '1') console.log(`[ai] ${label} raw reply (${content.length} chars): ${content.slice(0, 1500)}`);
+    // With a prefill the reply normally continues it; a server or model that ignores the prefill
+    // starts its own object instead. A thinking model may leave the answer in its reasoning.
+    const continued = prefill && !content.trimStart().startsWith('{') ? extractJSON(prefill + content) : null;
+    const value = continued ?? extractJSON(content) ?? extractJSON(data?.message?.thinking || '');
+    const check = value == null ? null : schema.safeParse(conformToSchema(value, js));
+    if (check?.success) return check.data;
+    const why = !content.trim() ? 'empty reply' : value == null ? 'no JSON found' : check.error.issues.slice(0, 3).map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
+    console.warn(`[ai] ${label}: unusable output (attempt ${attempt}, ${why}): ${content.slice(0, 160).replace(/\s+/g, ' ')}`);
+    // Retry once with a short, explicit correction.
+    correction = { role: 'user', content: `Your previous reply could not be used (${why}). Reply again with ONLY the JSON object described in the instructions — no other text, no code fences.` };
   }
   throw new AIError('The AI returned an unusable result. Please try again.', 502, 'ai_invalid_output', true);
 }
@@ -604,16 +630,8 @@ export async function chatWithResearch({ system, messages, effort = 'low' }) {
   return { text: v.text, sources: v.sources, searched };
 }
 
-/** First JSON object in a model's text reply (fenced or bare); null if none parses. */
-export function extractJSON(text = '') {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  const raw = fenced ? fenced[1] : text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1);
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
+// The robust parser lives in ./json.js; re-exported here for existing callers.
+export { extractJSON };
 
 /**
  * Comparison key for URLs: host + path + meaningful query. The query matters

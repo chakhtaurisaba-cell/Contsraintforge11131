@@ -42,6 +42,10 @@ export const config = {
     // 12 of 37 layers on the GPU (~12 tok/s); 99 = all layers (~45–50 tok/s) when they fit. If the
     // GPU can't hold them the client falls back to Ollama's automatic split.
     numGpu: ollamaCloud || process.env.OLLAMA_NUM_GPU === undefined || process.env.OLLAMA_NUM_GPU === '' ? null : num(process.env.OLLAMA_NUM_GPU, null),
+    // How structured answers are requested: 'schema' sends the JSON schema as Ollama's `format`
+    // (local Ollama enforces it); 'prompt' describes the JSON in the instructions and parses the
+    // reply (for servers that ignore or reject `format`, such as Ollama Cloud).
+    jsonMode: ['schema', 'prompt'].includes(process.env.AI_JSON_MODE) ? process.env.AI_JSON_MODE : ollamaCloud ? 'prompt' : 'schema',
     // Let "thinking" models reason before answering. Better plans, much slower locally.
     think: process.env.OLLAMA_THINK === 'true',
     // Local models on modest GPUs are slow. A request fails if Ollama sends nothing for

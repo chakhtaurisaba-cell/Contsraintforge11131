@@ -305,3 +305,10 @@ test('feasibility — a product named for a material it isn’t made of ("Cardbo
   extraIdeas = [];
   assert.match(r.rejected.find((x) => x.name === 'Cardboard box').reason, /called cardboard/);
 });
+
+test('feasibility — what a product holds is not what it is made of ("stand for glass jars")', async () => {
+  extraIdeas = [idea({ name: 'Wooden stand for glass jars', usesExisting: [{ inventoryName: 'Pine boards', quantityUsed: 1, unit: 'pcs', use: 'base' }], visualKind: 'stand' })];
+  const r = await ideation.generateIdeas({ quantity: 1, tools: ['Drill / driver', 'Saw'], currency: 'GEL' }, [pine, screws, brackets]);
+  extraIdeas = [];
+  assert.ok(r.ideas.some((i) => i.name === 'Wooden stand for glass jars'), JSON.stringify(r.rejected));
+});
