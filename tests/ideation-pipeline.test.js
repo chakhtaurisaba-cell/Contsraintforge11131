@@ -18,6 +18,8 @@ const idea = (o = {}) => ({
   ...o,
 });
 let extraIdeas = [];
+// Every checked idea: the cards (buildable now) plus those that need one more thing (unlock / left out).
+const all = (r) => [...r.ideas, ...(r.needsMore || [])];
 
 let mode = 'ok';
 let mock;
@@ -83,7 +85,7 @@ test('1 — text without any letters is rejected before calling the model', asyn
 test('4 — owned materials are reused: the model’s shopping list is cut to what is genuinely missing', async () => {
   const r = await ideation.generateIdeas({ quantity: 2, tools: ['Drill / driver', 'Saw'], currency: 'GEL' }, [pine, screws, brackets]);
   assert.equal(r.status, 'ok');
-  const shelf = r.ideas.find((i) => i.name === 'Bracket wall shelf');
+  const shelf = all(r).find((i) => i.name === 'Bracket wall shelf');
   assert.ok(!shelf.missing.some((m) => /screw/i.test(m.name)), `owned screws must not be bought: ${JSON.stringify(shelf.missing)}`);
   assert.ok(!shelf.missing.some((m) => /bracket/i.test(m.name)), 'owned brackets must not be bought');
   assert.ok(shelf.usesExisting.some((u) => u.inventoryName === 'Wood screws 4x40'));
@@ -91,12 +93,16 @@ test('4 — owned materials are reused: the model’s shopping list is cut to wh
   assert.equal(r.ideas[0].name, 'Plant stand', 'buildable now ranks above an idea with something to buy');
   assert.equal(r.ideas[0].verdict, 'ready');
   assert.equal(shelf.verdict, 'short');
-  assert.equal(r.ideas.length, 2, 'a repeated idea is dropped, not shown twice');
+  assert.deepEqual(r.ideas.map((i) => i.name), ['Plant stand'], 'cards: only what is buildable now; the repeat is dropped');
+  // Fewer than 3 buildable → the one item that unlocks the shelf is suggested, from the real shortfall.
+  assert.match(r.unlock.item, /wall plug/i);
+  assert.equal(r.unlock.checked, true);
+  assert.ok(r.unlock.ideas.some((i) => i.name === 'Bracket wall shelf'));
 });
 
 test('5 — a genuinely missing part stays on the list, with its exact quantity', async () => {
   const r = await ideation.generateIdeas({ quantity: 2, currency: 'GEL' }, [pine, screws, brackets]);
-  const shelf = r.ideas.find((i) => i.name === 'Bracket wall shelf');
+  const shelf = all(r).find((i) => i.name === 'Bracket wall shelf');
   const plugs = shelf.missing.find((m) => /wall plug/i.test(m.name));
   assert.ok(plugs, 'wall plugs are genuinely missing');
   assert.equal(plugs.quantity, 8, '4 per unit × 2-unit test batch');
@@ -105,8 +111,8 @@ test('5 — a genuinely missing part stays on the list, with its exact quantity'
 
 test('4 — free-text materials are reused, never bought', async () => {
   const r = await ideation.generateIdeas({ freeText: 'I have 4 wooden boards, 50 screws, 4 metal brackets and a drill', quantity: 1, currency: 'GEL' }, []);
-  assert.equal(r.status, 'ok');
-  const shelf = r.ideas.find((i) => i.name === 'Bracket wall shelf');
+  assert.ok(['ok', 'unlock'].includes(r.status), r.status);
+  const shelf = all(r).find((i) => i.name === 'Bracket wall shelf');
   assert.ok(!shelf.missing.some((m) => /screw|bracket/i.test(m.name)), JSON.stringify(shelf.missing));
   assert.ok(shelf.usesExisting.some((u) => u.inventoryName === 'metal brackets'));
 });
@@ -117,7 +123,7 @@ test('4 — materials named without an amount are owned, not bought, and the mod
   const prompt = mock.calls.find((c) => c.messages[0].content.startsWith('You are the product-ideation engine')).messages.at(-1).content;
   assert.ok(!/not stated/.test(prompt), 'no string quantities — small models refuse on them');
   assert.match(prompt, /quantityAssumed/);
-  const shelf = r.ideas.find((i) => i.name === 'Bracket wall shelf');
+  const shelf = all(r).find((i) => i.name === 'Bracket wall shelf');
   assert.ok(!shelf.missing.some((m) => /screw|bracket/i.test(m.name)), JSON.stringify(shelf.missing));
 });
 
@@ -127,7 +133,7 @@ test('3 — when the model proposes nothing, it is asked once more; a second emp
   const r = await ideation.generateIdeas({ freeText: 'wooden boards and screws', currency: 'GEL' }, []);
   assert.equal(r.status, 'no_ideas');
   assert.deepEqual(r.ideas, []);
-  assert.equal(mock.calls.filter((c) => c.messages[0].content.startsWith('You are the product-ideation engine')).length, 2);
+  assert.equal(mock.calls.filter((c) => c.messages[0].content.startsWith('You are the product-ideation engine')).length, 3, 'two parallel calls, then one explicit retry');
   mode = 'ok';
 });
 
@@ -141,7 +147,7 @@ test('grounding — an idea that uses nothing from the inventory is not shown', 
   extraIdeas = [idea({ name: 'Scented candles', usesExisting: [{ inventoryName: 'Soy wax', quantityUsed: 0.2, unit: 'kg', use: 'candle' }], visualKind: 'candle_jar' })];
   const r = await ideation.generateIdeas({ quantity: 1, tools: ['Drill / driver', 'Saw'], currency: 'GEL' }, [pine, screws, brackets]);
   extraIdeas = [];
-  assert.ok(!r.ideas.some((i) => i.name === 'Scented candles'), 'claims an inventory item the user does not have');
+  assert.ok(!all(r).some((i) => i.name === 'Scented candles'), 'claims an inventory item the user does not have');
   assert.ok(r.rejected.some((x) => x.name === 'Scented candles' && x.reason), 'hidden with a reason');
 });
 
@@ -149,7 +155,7 @@ test('grounding — a claim of more stock than the user owns becomes an exact sh
   extraIdeas = [idea({ name: 'Big bookcase', usesExisting: [{ inventoryName: 'Pine boards', quantityUsed: 8, unit: 'pcs', use: 'sides and shelves' }], visualKind: 'bookshelf' })];
   const r = await ideation.generateIdeas({ quantity: 1, tools: ['Drill / driver', 'Saw'], currency: 'GEL' }, [pine, screws, brackets]);
   extraIdeas = [];
-  const bookcase = r.ideas.find((i) => i.name === 'Big bookcase');
+  const bookcase = all(r).find((i) => i.name === 'Big bookcase');
   const boards = bookcase.materials.find((m) => m.name === 'Pine boards');
   assert.equal(boards.status, 'insufficient');
   assert.equal(boards.shortage, 2, 'needs 8, owns 6');
@@ -161,11 +167,11 @@ test('grounding — missing tools are computed from the user’s tools, not take
   extraIdeas = [idea({ name: 'Cut-out sign', toolsRequired: ['Jigsaw'], visualKind: 'sign' })];
   const r = await ideation.generateIdeas({ quantity: 1, tools: ['Drill / driver'], currency: 'GEL' }, [pine, screws, brackets]);
   extraIdeas = [];
-  const sign = r.ideas.find((i) => i.name === 'Cut-out sign');
+  const sign = all(r).find((i) => i.name === 'Cut-out sign');
   assert.ok(sign.toolsMissing.includes('Saw'), 'boards need a saw: ' + JSON.stringify(sign.toolsMissing));
   assert.ok(!sign.toolsMissing.includes('Jigsaw'), 'a tool the model names is not trusted on its own');
   assert.equal(sign.verdict, 'tools');
-  assert.ok(!r.ideas.find((i) => i.name === 'Plant stand').toolsMissing.includes('Drill / driver'), 'the drill is owned');
+  assert.ok(!all(r).find((i) => i.name === 'Plant stand').toolsMissing.includes('Drill / driver'), 'the drill is owned');
 });
 
 test('grounding — a product longer than the owned boards is flagged', async () => {
@@ -173,7 +179,7 @@ test('grounding — a product longer than the owned boards is flagged', async ()
   const sized = { ...pine, dimensions: { length: 1000, width: 150, thickness: 18, unit: 'mm', status: 'user_confirmed' } };
   const r = await ideation.generateIdeas({ quantity: 1, tools: ['Drill / driver', 'Saw'], currency: 'GEL' }, [sized, screws, brackets]);
   extraIdeas = [];
-  const bench = r.ideas.find((i) => i.name === 'Long bench');
+  const bench = all(r).find((i) => i.name === 'Long bench');
   assert.match(bench.sizeWarning, /1500 mm.*1000 mm/);
   assert.equal(bench.verdict, 'confirm');
 });
@@ -188,7 +194,7 @@ test('grounding — an owned item the model also lists as "missing" is not bough
   extraIdeas = [idea({ name: 'Shelf with screws twice', missing: [{ name: 'Pine boards', quantity: 1, unit: 'pcs', estUnitPrice: 8, why: 'shelf' }] })];
   const r = await ideation.generateIdeas({ quantity: 1, tools: ['Drill / driver', 'Saw'], currency: 'GEL' }, [pine, screws, brackets]);
   extraIdeas = [];
-  const s = r.ideas.find((i) => i.name === 'Shelf with screws twice');
+  const s = all(r).find((i) => i.name === 'Shelf with screws twice');
   assert.deepEqual(s.missing, [], JSON.stringify(s.missing));
   assert.equal(s.verdict, 'ready');
 });
@@ -197,7 +203,7 @@ test('near-duplicate ideas ("… (2nd)") are shown once', async () => {
   extraIdeas = [idea({ name: 'Plant stand (2nd)', visualKind: 'stand' })];
   const r = await ideation.generateIdeas({ quantity: 1, tools: ['Drill / driver', 'Saw'], currency: 'GEL' }, [pine, screws, brackets]);
   extraIdeas = [];
-  assert.equal(r.ideas.filter((i) => /plant stand/i.test(i.name)).length, 1);
+  assert.equal(all(r).filter((i) => /plant stand/i.test(i.name)).length, 1);
 });
 
 test('parse — an amount the text never gave is "unknown" (confirm), not a stated 1 to buy against', async () => {
@@ -213,7 +219,7 @@ test('grounding — reusable equipment (a melting pot) is not multiplied by the 
   extraIdeas = [idea({ name: 'Board display stand', usesExisting: [{ inventoryName: 'Pine boards', quantityUsed: 1, unit: 'pcs', use: 'base' }, { inventoryName: 'pot for melting', quantityUsed: 1, unit: 'pot', use: 'melting' }] })];
   const r = await ideation.generateIdeas({ quantity: 3, tools: ['Drill / driver', 'Saw'], currency: 'GEL' }, [pine, screws, brackets, pot]);
   extraIdeas = [];
-  const s = r.ideas.find((i) => i.name === 'Board display stand');
+  const s = all(r).find((i) => i.name === 'Board display stand');
   assert.ok(!s.missing.some((m) => /pot/.test(m.name)), JSON.stringify(s.missing));
   assert.ok(s.materials.find((m) => m.name === 'pot for melting').equipment);
 });
@@ -226,9 +232,9 @@ test('feasibility — a load-bearing shelf from plastic bottles is rejected with
   ];
   const r = await ideation.generateIdeas({ quantity: 1, tools: ['Scissors'], currency: 'GEL' }, [bottles]);
   extraIdeas = [];
-  assert.ok(!r.ideas.some((i) => i.name === 'Bottle wall shelf'));
+  assert.ok(!all(r).some((i) => i.name === 'Bottle wall shelf'));
   assert.match(r.rejected.find((x) => x.name === 'Bottle wall shelf').reason, /weight|wood or metal/);
-  const planter = r.ideas.find((i) => i.name === 'Bottle herb planter');
+  const planter = all(r).find((i) => i.name === 'Bottle herb planter');
   assert.ok(planter, 'a bottle planter suits bottles');
   assert.equal(planter.kind, 'bottle_planter');
 });
@@ -238,7 +244,7 @@ test('feasibility — a fabric pouch without sewing tools says so; wood without 
   extraIdeas = [idea({ name: 'Denim pouch', primaryMaterial: 'denim jeans', usesExisting: [{ inventoryName: 'denim jeans', quantityUsed: 1, unit: 'pcs', use: 'body' }], toolsRequired: [], visualKind: 'pouch' })];
   const r = await ideation.generateIdeas({ quantity: 1, tools: [], currency: 'GEL' }, [denim]);
   extraIdeas = [];
-  const pouch = r.ideas.find((i) => i.name === 'Denim pouch');
+  const pouch = all(r).find((i) => i.name === 'Denim pouch');
   assert.ok(pouch.toolsMissing.includes('Needle or sewing machine'));
   assert.ok(pouch.toolsMissing.includes('Scissors'));
   const r2 = await ideation.generateIdeas({ quantity: 1, tools: ['Drill / driver'], currency: 'GEL' }, [pine, screws, brackets]);
@@ -253,10 +259,10 @@ test('tools — tools the model names that don’t fit the materials are ignored
   ];
   const r = await ideation.generateIdeas({ quantity: 1, tools: ['Scissors'], currency: 'GEL' }, [bottles]);
   extraIdeas = [];
-  const holder = r.ideas.find((i) => i.name === 'Bottle pen holder');
+  const holder = all(r).find((i) => i.name === 'Bottle pen holder');
   assert.deepEqual(holder.toolsMissing, [], JSON.stringify(holder.toolsMissing));
   assert.equal(holder.verdict, 'ready');
-  const zipped = r.ideas.find((i) => i.name === 'Zipped bottle case');
+  const zipped = all(r).find((i) => i.name === 'Zipped bottle case');
   assert.ok(zipped.missing.some((m) => m.name === 'Zip'), JSON.stringify(zipped.missing));
 });
 
@@ -266,7 +272,7 @@ test('supplies — an unknown amount of glue does not hold up a build; "100 scre
   extraIdeas = [idea({ name: 'Glued box', usesExisting: [{ inventoryName: 'Pine boards', quantityUsed: 1, unit: 'pcs', use: 'sides' }, { inventoryName: 'wood glue', quantityUsed: 0.1, unit: 'container', use: 'joints' }, { inventoryName: 'wood screws', quantityUsed: 8, unit: 'pcs', use: 'corners' }], visualKind: 'box' })];
   const r = await ideation.generateIdeas({ quantity: 2, tools: ['Drill / driver', 'Saw'], currency: 'GEL' }, [pine, glue, screwsOdd]);
   extraIdeas = [];
-  const box = r.ideas.find((i) => i.name === 'Glued box');
+  const box = all(r).find((i) => i.name === 'Glued box');
   assert.deepEqual(box.confirmNotes, [], JSON.stringify(box.confirmNotes));
   assert.equal(box.verdict, 'ready');
 });
@@ -276,7 +282,7 @@ test('supplies — glue the model lists as "to buy" but the user owns is covered
   extraIdeas = [idea({ name: 'Glued tray', usesExisting: [{ inventoryName: 'Pine boards', quantityUsed: 1, unit: 'pcs', use: 'base' }], missing: [{ name: 'wood glue', quantity: 0.1, unit: 'container', estUnitPrice: 5, why: 'joints' }, { name: 'Wood screws', quantity: 8, unit: 'pcs', estUnitPrice: 0.1, why: 'corners' }], visualKind: 'tray' })];
   const r = await ideation.generateIdeas({ quantity: 2, tools: ['Drill / driver', 'Saw'], currency: 'GEL' }, [pine, glue, screws]);
   extraIdeas = [];
-  const tray = r.ideas.find((i) => i.name === 'Glued tray');
+  const tray = all(r).find((i) => i.name === 'Glued tray');
   assert.deepEqual(tray.missing, []);
   assert.deepEqual(tray.confirmNotes, [], JSON.stringify(tray.confirmNotes));
 });
@@ -290,7 +296,7 @@ test('feasibility — joining depends on the material; weight-bearing names need
   ];
   const r = await ideation.generateIdeas({ quantity: 1, tools: ['Scissors'], currency: 'GEL' }, [card, bottles]);
   extraIdeas = [];
-  const box = r.ideas.find((i) => i.name === 'Cardboard storage box');
+  const box = all(r).find((i) => i.name === 'Cardboard storage box');
   assert.ok(box.missing.some((m) => /glue or strong tape/i.test(m.name)), JSON.stringify(box.missing));
   assert.ok(!box.missing.some((m) => /screw/i.test(m.name)), 'no screws for cardboard');
   assert.match(r.rejected.find((x) => x.name === 'Bottle ladder').reason, /weight/);
@@ -300,7 +306,7 @@ test('feasibility — screws named as the main material do not decide what a woo
   extraIdeas = [idea({ name: 'Wooden shelf', primaryMaterial: 'Wood screws 4x40', usesExisting: [{ inventoryName: 'Pine boards', quantityUsed: 1, unit: 'pcs', use: 'shelf' }, { inventoryName: 'Wood screws 4x40', quantityUsed: 6, unit: 'pcs', use: 'fixing' }], visualKind: 'wall_shelf' })];
   const r = await ideation.generateIdeas({ quantity: 1, tools: ['Drill / driver', 'Saw'], currency: 'GEL' }, [pine, screws, brackets]);
   extraIdeas = [];
-  assert.ok(r.ideas.some((i) => i.name === 'Wooden shelf'), JSON.stringify(r.rejected));
+  assert.ok(all(r).some((i) => i.name === 'Wooden shelf'), JSON.stringify(r.rejected));
 });
 
 test('feasibility — a product named for a material it isn’t made of ("Cardboard box" from boards) is rejected', async () => {
@@ -314,7 +320,7 @@ test('feasibility — what a product holds is not what it is made of ("stand for
   extraIdeas = [idea({ name: 'Wooden stand for glass jars', usesExisting: [{ inventoryName: 'Pine boards', quantityUsed: 1, unit: 'pcs', use: 'base' }], visualKind: 'stand' })];
   const r = await ideation.generateIdeas({ quantity: 1, tools: ['Drill / driver', 'Saw'], currency: 'GEL' }, [pine, screws, brackets]);
   extraIdeas = [];
-  assert.ok(r.ideas.some((i) => i.name === 'Wooden stand for glass jars'), JSON.stringify(r.rejected));
+  assert.ok(all(r).some((i) => i.name === 'Wooden stand for glass jars'), JSON.stringify(r.rejected));
 });
 
 test('structured output — the ideation call sends a JSON schema with every idea field, and they reach the result', async () => {
@@ -327,7 +333,7 @@ test('structured output — the ideation call sends a JSON schema with every ide
   for (const k of ['name', 'summary', 'whyFeasible', 'usesExisting', 'missing', 'toolsRequired', 'steps', 'difficulty', 'estProductionMinutes', 'potentialUse', 'sellable']) {
     assert.ok(item.properties[k], `schema has ${k}`);
   }
-  const shelf = r.ideas.find((i) => i.name === 'Bracket wall shelf');
+  const shelf = all(r).find((i) => i.name === 'Bracket wall shelf');
   assert.equal(shelf.steps.length, 3);
   assert.match(shelf.whyFeasible, /brackets/);
   assert.equal(shelf.sellable.realistic, true);
@@ -338,8 +344,8 @@ test('ideas flow with a 400 INVALID_ARGUMENT: the invalid feature is found with 
   mode = 'reject_thinking';
   mock.calls = [];
   const r = await ideation.generateIdeas({ freeText: '3 pine boards, screws, wood glue, sandpaper, hammer, hand saw', quantity: 1, currency: 'GEL' }, []);
-  assert.equal(r.status, 'ok');
-  assert.ok(r.ideas.length >= 1);
+  assert.ok(['ok', 'unlock'].includes(r.status), r.status);
+  assert.ok(all(r).length >= 1, 'the ideas were generated and checked');
   const client = await import('../server/ai/client.js');
   assert.equal(client.aiStatus().invalidArgument.feature, 'thinkingConfig');
   assert.equal(client.aiStatus().invalidArgument.call, 'parse materials');

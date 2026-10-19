@@ -97,11 +97,23 @@ export const ProductIdea = z.object({
     realistic: z.boolean().describe('true only if a buyer would plausibly pay for it as made from these materials'),
     note: str.describe('one short selling suggestion if realistic (where/how), otherwise why not'),
   }),
+  sourceRefs: z.array(num).describe('numbers of the research results that inspired or confirm this idea; [] when it is your own'),
   visualKind: z.enum(VISUAL_KINDS).describe('the closest picture of the finished product'),
+});
+
+// The smallest addition that unlocks good projects — used only when the inventory alone
+// cannot make enough strong ones. A plain object (never null): item is "" when not needed.
+export const UnlockSuggestion = z.object({
+  item: str.describe('ONE material or tool to add, e.g. "a ball of twine"; empty string when the inventory already makes enough strong projects'),
+  why: str.describe('why this single item unlocks useful projects with what they already have'),
+  estPrice: num.describe('rough price of that one item in the requested currency, 0 if unknown'),
+  ideas: z.array(z.object({ name: str, summary: str })).describe('2–4 useful projects that become possible with that one item plus the current inventory'),
 });
 
 export const IdeaResult = z.object({
   ideas: z.array(ProductIdea),
+  enoughForStrongProjects: z.boolean().describe('false when these exact materials and tools cannot make at least 3 genuinely useful, realistic products'),
+  unlock: UnlockSuggestion,
   notes: str,
 });
 

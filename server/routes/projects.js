@@ -4,6 +4,7 @@ import { all, get, run, now, uid, parseJSON, logActivity, transaction } from '..
 import { validate, rateLimit } from '../middleware.js';
 import { getProject, listProjects, projectEconomics, getSettings, allocationInputs, projectAllocation } from '../services/projects.js';
 import { generateIdeas, generatePlan } from '../services/ideation.js';
+import { ideaImage, ImageError } from '../ai/images.js';
 import { researchCandidates, researchProduct } from '../services/research.js';
 import { toolCheck } from '../../shared/allocation.js';
 import { recommendChannels } from '../services/channels.js';
@@ -73,6 +74,29 @@ projects.post('/ideas/:runId/research', aiLimit, async (req, res) => {
   const updated = ideas.map((idea, i) => ({ ...idea, research: research.byIndex[i] ? { ...research.byIndex[i], retrievedAt: research.retrievedAt } : { sources: [], note: 'No relevant sources found.', retrievedAt: research.retrievedAt } }));
   run('UPDATE idea_runs SET ideas = ? WHERE id = ?', JSON.stringify(updated), row.id);
   res.json({ ideas: updated, searches: research.searches, dropped: research.dropped, error: research.error || null });
+});
+
+/** A generated picture of one idea — requested by each card when it comes into view. */
+const imageLimit = rateLimit({ windowMs: 10 * 60 * 1000, max: 80 });
+const ImageRequest = z.object({
+  idea: z.object({
+    name: z.string().min(1).max(160),
+    summary: z.string().max(600).optional(),
+    kind: z.string().max(40).optional(),
+    visualKind: z.string().max(40).optional(),
+    primaryMaterial: z.string().max(160).optional(),
+    usesExisting: z.array(z.object({ inventoryName: z.string().max(160), use: z.string().max(160).optional() }).passthrough()).max(30).optional(),
+    missing: z.array(z.object({ name: z.string().max(160) }).passthrough()).max(30).optional(),
+    size: z.object({ length: z.number().optional(), width: z.number().optional(), height: z.number().optional() }).partial().optional(),
+  }),
+});
+projects.post('/ideas/image', imageLimit, validate(ImageRequest), async (req, res) => {
+  try {
+    res.json(await ideaImage(req.body.idea));
+  } catch (err) {
+    if (!(err instanceof ImageError)) throw err;
+    res.status(503).json({ error: err.message, code: `images_${err.code}`, retryable: ['rate_limited', 'timeout', 'error'].includes(err.code) });
+  }
 });
 
 projects.get('/ideas/runs', (_req, res) => {

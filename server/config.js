@@ -25,8 +25,18 @@ export const config = {
     // Tests only: point the SDK at a local stand-in server instead of Google.
     baseUrl: (process.env.GEMINI_BASE_URL || '').trim() || undefined,
     enabled: process.env.AI_ENABLED !== 'false',
-    // Candidate ideas asked from the model per request; unrealistic and repeated ones are filtered out afterwards.
-    maxIdeas: Math.max(1, Math.min(10, num(process.env.AI_MAX_IDEAS, 8))),
+    // Candidate ideas asked from the model per request (split over two parallel calls); unrealistic
+    // and repeated ones are filtered out afterwards, so fewer are shown when fewer hold up.
+    maxIdeas: Math.max(2, Math.min(16, num(process.env.AI_MAX_IDEAS, 12))),
+    // Web research before ideation (searches only, no page downloads): discovers possibilities.
+    ideaResearch: process.env.AI_IDEA_RESEARCH !== 'off',
+    // Card pictures from Google's image model (separate from gemini-3.8-flash; paid only — no
+    // free tier). Generated lazily per card, cached, and capped per day.
+    images: {
+      enabled: process.env.AI_IMAGES !== 'off',
+      model: (process.env.GEMINI_IMAGE_MODEL || '').trim() || 'gemini-nano-banana-2.1',
+      dailyLimit: Math.max(0, num(process.env.AI_IMAGE_DAILY_LIMIT, 150)),
+    },
     // One Gemini call may take this long before it is cancelled with a clear "took too long" error.
     // On Vercel the whole function is stopped at 300 s (vercel.json), so one call stays well below it.
     timeoutMs: num(process.env.AI_TIMEOUT_MS, onVercel ? 120000 : 180000),

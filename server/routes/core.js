@@ -4,6 +4,7 @@ import { all, get, run, now, uid, parseJSON, logActivity, transaction } from '..
 import { validate } from '../middleware.js';
 import { config, shopifyConfigured } from '../config.js';
 import { aiEnabled, aiStatus, probeAI } from '../ai/client.js';
+import { imageStatus } from '../ai/images.js';
 import { getSettings, listProjects, projectEconomics } from '../services/projects.js';
 import { computeAnalytics } from '../services/analytics.js';
 import { listRecommendations } from '../services/advisor.js';
@@ -17,7 +18,7 @@ core.get('/health', async (_req, res) => {
   if (['unreachable', 'model_unavailable', 'error', 'unchecked', 'unauthorized'].includes(aiStatus().state)) await probeAI();
   // ai.status is safe to expose: it names the env var / model to fix, never a secret.
   // storage.temporary: on Vercel the SQLite file lives in /tmp and can disappear (see README).
-  res.json({ ok: true, ai: { enabled: aiEnabled(), model: aiEnabled() ? config.ai.model : null, status: aiStatus() }, storage: { temporary: config.dbIsTemporary }, shopify: { configured: shopifyConfigured() } });
+  res.json({ ok: true, ai: { enabled: aiEnabled(), model: aiEnabled() ? config.ai.model : null, status: aiStatus(), images: imageStatus() }, storage: { temporary: config.dbIsTemporary }, shopify: { configured: shopifyConfigured() } });
 });
 
 /* ---------- settings ---------- */

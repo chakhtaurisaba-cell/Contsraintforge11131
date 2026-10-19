@@ -172,6 +172,16 @@ CREATE TABLE IF NOT EXISTS assistant_messages (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_assistant_scope ON assistant_messages(scope, created_at);
+
+-- Generated card pictures, cached so an identical idea is never paid for twice.
+CREATE TABLE IF NOT EXISTS idea_images (
+  key TEXT PRIMARY KEY,         -- hash of the model + the idea's name, kind, summary and materials
+  mime TEXT NOT NULL,
+  data TEXT NOT NULL,           -- base64
+  model TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_idea_images_created ON idea_images(created_at);
 `);
 
 // Additive migrations for databases created by earlier versions.

@@ -62,25 +62,31 @@ See `.env.example`.
   - On startup, and on each health check while it is down, the server checks the key and the model with a metadata call (no tokens used). The result is logged and shown in Settings → AI engine with what to fix (missing key, rejected key, rate limit, model unavailable).
   - Every structured call uses Gemini's structured output: `responseMimeType: application/json` plus the zod schema converted to the JSON Schema subset Gemini accepts (`toGeminiSchema` in `server/ai/json.js`). The reply is validated again with zod server-side; invalid output is retried once with the reason, and a second failure is reported as a retryable error — never replaced by made-up results. Totals and margins are never taken from model text.
   - Photos are sent as `inlineData` parts (multimodal input) after being downscaled to 1024 px in the browser.
-  - Requests ask for at most `AI_MAX_IDEAS` ideas (default 8) with a matching token budget; each call logs its time and token counts (`[ai] product ideas: 9.8s · prompt 2100 tok · output 4800 tok · STOP`).
+  - Ideas come from two structured calls that run at the same time, each asked for half of `AI_MAX_IDEAS` (default 12) from a complementary angle (practical storage and household items / other purposes such as garden, kitchen, gifts and play), with a matching token budget; each call logs its time and token counts (`[ai] product ideas 1/2: 9.8s · prompt 2100 tok · output 4800 tok · STOP`).
   - Idea generation streams real progress to the browser (reading → ideas drafted so far → checking against stock) and can be cancelled; cancelling aborts the Gemini request. Web research only runs when you ask for it ("Find build guides online").
   - A Gemini request is aborted after `AI_TIMEOUT_MS` (120 s on Vercel, 180 s locally) with a clear "took too long" message. Rate limits (429) and Gemini outages (5xx) give retryable messages; a rejected key or unavailable model switches AI off until a re-probe succeeds.
 
+### How ideas are generated
+
+1. **Research first** (`server/services/ideaResearch.js`): while Gemini reads the description, the server already runs 2–3 real web searches that combine the materials ("DIY projects plastic bottle tape", "things to make from glass jar and tape"). Only titles and snippets are used (no page downloads), results are cached for an hour, and the whole step gives up after 8 s. If search fails, ideation continues on the model's own reasoning and the results say so.
+2. **Two designers in parallel**: both get the inventory, the tools and the numbered research results, and are told that results are evidence, not answers — every possibility must be checked against the exact materials, amounts and tools. They name the results an idea relies on (`sourceRefs`); only real result numbers become "Inspired by" links.
+3. **Checks** (below), then **duplicates**: names are compared by purpose ("pencil holder", "pen organizer" and "desk pencil container" are one idea), and at most two ideas of the same specific kind are kept.
+4. **Only buildable ideas become cards** — buildable now, or after confirming an amount. Ideas that need a tool or material the user lacks are listed under "left out" with the reason.
+5. **One-item unlock**: when fewer than 3 strong projects remain, the result names the ONE addition that unlocks the most. It is computed from the checked ideas whose only gap is that single item (and labelled as checked); otherwise it is the model's suggestion (labelled as not yet checked), and never something the user already owns. With no buildable idea at all the result says "I couldn't find a strong, realistic project using only these materials." and shows that one item and the projects it unlocks, with a button that adds it and generates again.
+
 ### How ideas are grounded
 
-The model proposes about 8 candidates; the app checks each one and shows only those that hold up (usually 3–7). For every idea:
+The app checks every candidate and shows only those that hold up. For every idea:
 
-- **physical sense** (`server/services/feasibility.js`): each product kind has rules — its main material must suit it (a shelf, stool or anything named for carrying weight must be wood or metal, so plastic bottles or cardboard are rejected), it must be made of a material you own, parts need a way to join that fits the material (screws for wood, glue or tape for cardboard), and cutting/sewing needs a tool that can do it. A product whose name needs a part you don't have ("zipped bag", "clock") gets that part on the shopping list. Rejected ideas are listed with their reason under the results;
-- the model's own tool list is only used where it fits the materials (a soldering iron for electronics), and an unknown amount of glue, sandpaper or thread doesn't hold up a build;
-- at most two ideas of the same kind are shown, and near-identical names count as one;
-
+- **physical sense** (`server/services/feasibility.js`): each product kind has rules — its main material must suit it (a shelf, stool or anything named for carrying weight must be wood or metal, so plastic bottles or cardboard are rejected), it must be made of a material you own, parts need a way to join that fits the material (screws for wood, glue or tape for cardboard), and cutting/sewing needs a tool that can do it (cutting only when the build steps actually cut). Steps that say nothing ("Assemble the materials") are removed, and an idea left with fewer than two real steps is not shown. A product whose name needs a part you don't have ("zipped bag", "clock") gets that part on the shopping list. Rejected ideas are listed with their reason under the results;
+- the model's own tool list is used where it fits the materials (a soldering iron for electronics) or where its own steps use the tool; steps that drill, sew or solder imply that tool. An unknown amount of glue, sandpaper or thread doesn't hold up a build;
 - each "uses your X" claim must match a real inventory item (or something you typed); claims about items you don't have are dropped, and an idea that uses nothing you own is not shown;
 - owned parts and the model's shopping list go through the deterministic allocator (`shared/allocation.js`), so quantities are checked against your stock and only the exact shortfall is ever bought. Reusable equipment (a melting pot, scissors) is never multiplied by the batch;
 - missing tools are computed from your tools, and the finished size is checked against your boards when sizes are known;
 - materials you only typed are saved to your inventory when you open a blueprint, so the plan and bill of materials reuse them;
 - build plans are checked too: a part cut larger than the stock it comes from, or a "cut" step when none of your tools can cut, is flagged at the top of the build guide.
 
-Ideas are ordered by: buildable now → needs a size/amount confirmed → needs a tool → needs a purchase, then by the share of parts from your stock, the cost of any shortage, and difficulty. The model's own scores are not used.
+Ideas are ordered by: buildable now → needs an amount or size confirmed, then by the model's best-first order (it is told to rank by feasibility with exactly these items, usefulness, fit to the materials, little waste and simplicity — no invented scores), then the share of parts from your stock and difficulty. Photo identifications the vision model was unsure about (< 60 % confidence) are marked as uncertain in the prompt, so they don't carry a design.
 - **Web research (no key):** `SEARCH_PROVIDER=duckduckgo` (default), `searxng` with `SEARXNG_URL`, or `off`. The assistant uses Gemini function calling (`web_search`, `web_fetch`); the server runs those tools itself.
   - The server runs the searches and reads the pages itself. The model only sees those results and may only cite their URLs; any other link is removed before it reaches the user.
   - Page reading is limited to public http(s) hosts.
@@ -168,7 +174,9 @@ Provenance is tracked for important values:
 
 ## Product pictures
 
-Each idea card shows either an **example photo** or a **concept illustration**, and says which.
+Each idea card shows an **AI-generated preview** of that exact idea, an **example photo** or a **concept illustration**, and says which.
+
+- **AI-generated previews** (`server/ai/images.js`) come from a Google image model — by default `gemini-nano-banana-2.1` through the Interactions API of the official `@google/genai` SDK (`gemini-3.8-flash` itself does not generate images). The prompt describes the idea's name, purpose, size and exactly the materials it uses, with no other materials, text or people. A picture is requested only when its card comes on screen (two at a time), so ideas appear first and never wait for pictures. Pictures are cached by a hash of the idea (memory + database), so an identical idea is never generated twice, and they are saved with a project created from the card. **Cost:** Google's image models have no free tier (about US$0.034 per 1K picture at the time of writing); `AI_IMAGE_DAILY_LIMIT` (default 150/day) caps new pictures and `AI_IMAGES=off` disables them. If the key has no image access, the server stops trying for 30 minutes, `/api/health` → `ai.images` says why, and cards keep the photo or illustration below. Every generated image carries Google's SynthID watermark.
 
 - **Example photos** (`public/products/`, 23 images) come from Wikimedia Commons and Openverse (Flickr) under free licences — CC0, public domain, CC BY or CC BY-SA. Each was reviewed by eye before being added. A photo shows that *kind* of product in that material (a wooden wall shelf, a jar candle, a fabric zip pouch…), not the user's exact design. `src/components/productPhotos.js` decides when one fits: kind and material must match, and the product's name must not describe a different design (a "two-tier shelf unit" doesn't get the single-shelf photo). One photo is never shown twice in the same list. Credits are on the About page (`/about#credits`) and in each photo's tooltip.
 - **Concept illustrations** are drawn in SVG for everything else (cardboard organisers, bottle planters, bookshelves… — no suitable licensed photo was found). They show the product type in its material, not exact proportions. If a photo ever fails to load, the drawing is shown instead.
@@ -194,6 +202,9 @@ How it fits together:
 |---|---|---|
 | `GEMINI_API_KEY` | yes | your key from https://aistudio.google.com/apikey |
 | `AI_TIMEOUT_MS` | no | per-request limit in ms (default 120000 on Vercel) |
+| `AI_IMAGES` | no | `off` to never generate card pictures (they are paid only) |
+| `GEMINI_IMAGE_MODEL` | no | defaults to `gemini-nano-banana-2.1` |
+| `AI_IMAGE_DAILY_LIMIT` | no | max new pictures per day (default 150) |
 
 Check the key before deploying: put `GEMINI_API_KEY` in your local `.env` (git-ignored) and run `npm run test:live` — the full live suite (photo input, scan, ideas, build plan, selling guide, assistant) against Gemini.
 

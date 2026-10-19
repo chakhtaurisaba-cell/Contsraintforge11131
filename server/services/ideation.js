@@ -22,6 +22,10 @@ import { uid } from '../db.js';
 import { config } from '../config.js';
 import { checkFeasibility, relevantModelTools, isSupply } from './feasibility.js';
 import { researchProduct } from './research.js';
+import { researchIdeas, evidenceForPrompt } from './ideaResearch.js';
+
+// Fewer buildable ideas than this → the one-item "unlock" suggestion is shown.
+const MIN_STRONG = 3;
 
 const r2 = (v) => Math.round(v * 100) / 100;
 
@@ -100,7 +104,7 @@ function groundIdea(idea, pool, testBatch, request) {
 
   const userTools = request.userTools || [];
   // Tools: cutting/sewing needs from the rules, plus only those model-named tools that fit the materials used.
-  const toolsMissing = [...new Set([...toolCheck(relevantModelTools(idea.toolsRequired, owned), userTools, pool).filter((t) => !t.have).map((t) => t.name), ...feas.addTools])];
+  const toolsMissing = [...new Set([...toolCheck(relevantModelTools(idea.toolsRequired, owned, idea.steps), userTools, pool).filter((t) => !t.have).map((t) => t.name), ...feas.addTools])];
   // An unknown amount of glue, sandpaper or thread doesn't block a build; other unknown amounts do.
   // (Judged by the stock item that actually covers the line, whichever list the model put it in.)
   const coveredBySupply = (l) => l.sources.some((src) => src.itemId && isSupply(pool.find((p) => p.id === src.itemId) || {}));
@@ -182,18 +186,83 @@ function sizeCheck(idea, owned) {
 const VERDICT_RANK = { ready: 0, confirm: 1, tools: 2, short: 3 };
 const DIFFICULTY_RANK = { beginner: 0, intermediate: 1, advanced: 2 };
 /**
- * Transparent ranking: buildable now first, then the share of parts covered by your stock,
- * then the cost of any shortage, then difficulty and build time.
+ * Transparent ranking. Feasibility first (computed by the app: buildable now → confirm an
+ * amount → needs a tool → needs a purchase), then the model's own best-first order (it is told
+ * to order by usefulness, fit to these materials, little waste and simplicity — no invented
+ * scores), then the share of parts from stock, shortage cost, difficulty and build time.
  */
 function rankIdeas(a, b) {
   const share = (i) => (i.fit.totalParts ? i.fit.ownedParts / i.fit.totalParts : 0);
   return (
     VERDICT_RANK[a.verdict] - VERDICT_RANK[b.verdict] ||
+    (a.modelRank ?? 99) - (b.modelRank ?? 99) ||
     share(b) - share(a) ||
     a.shortageCost - b.shortageCost ||
     (DIFFICULTY_RANK[a.difficulty] ?? 1) - (DIFFICULTY_RANK[b.difficulty] ?? 1) ||
     (Number(a.estProductionMinutes) || 0) - (Number(b.estProductionMinutes) || 0)
   );
+}
+
+/* ----------------------------- duplicates ----------------------------- */
+
+// Words that name the same purpose ("pencil holder" = "pen organizer" = "desk pen cup").
+const SYNONYMS = [
+  [/^(pencil|pen|marker|crayon)$/, 'pen'],
+  [/^(holder|organi[sz]er|caddy|container|cup|tidy|storage|keeper)$/, 'holder'],
+  [/^(box|bin|crate|chest|case)$/, 'box'],
+  [/^(shelf|shelve|ledge|rack)$/, 'shelf'],
+  [/^(planter|pot)$/, 'planter'],
+  [/^(feeder|bird)$/, 'feeder'],
+  [/^(lamp|lantern|light|luminary)$/, 'light'],
+  [/^(vase|bud)$/, 'vase'],
+  [/^(tray|platter)$/, 'tray'],
+  [/^(sign|plaque)$/, 'sign'],
+];
+// Words that say what it's made of or decorate the name, not what it is for.
+const NOISE = new Set(['plastic', 'bottle', 'glass', 'jar', 'wood', 'wooden', 'pine', 'board', 'cardboard', 'fabric', 'tape', 'taped', 'upcycled', 'recycled', 'simple', 'easy', 'mini', 'small', 'large', 'big', 'diy', 'handmade', 'rustic', 'desk', 'desktop', 'the', 'and', 'for', 'with', 'from', 'made', 'style', 'reused']);
+const purposeTokens = (name) => new Set(tokens(name).filter((t) => !NOISE.has(t)).map((t) => SYNONYMS.find(([re]) => re.test(t))?.[1] || t));
+
+/**
+ * Near-duplicates: same name after cleanup, or the same purpose words (≥ 2/3 overlap, by the
+ * smaller set), e.g. "Plastic bottle pencil holder" / "Bottle pen organizer" / "Desk pencil container".
+ */
+export function isNearDuplicate(a, b) {
+  const A = purposeTokens(a);
+  const B = purposeTokens(b);
+  if (!A.size || !B.size) return nameSimilarity(a, b) >= 0.8;
+  let common = 0;
+  A.forEach((t) => { if (B.has(t)) common += 1; });
+  // A one-word purpose only matches a short name: "Bottle planter" ≠ "Self-watering bottle planter".
+  return common / Math.min(A.size, B.size) >= 0.67 && (common >= 2 || Math.max(A.size, B.size) <= 2);
+}
+
+/* ----------------------------- instructions ----------------------------- */
+
+const VAGUE_STEP = /^(now\s+)?(assemble|construct|build|make|create|put together|finish|complete)\s+(the\s+|your\s+|all\s+)?(product|project|item|materials?|pieces?|parts?|it|everything|design)(\s+together)?\s*\.?$/i;
+/** Removes steps that say nothing ("Assemble the materials."); returns the remaining steps. */
+export function concreteSteps(steps = []) {
+  return steps.map((s) => String(s).trim()).filter((s) => s && !VAGUE_STEP.test(s) && s.split(/\s+/).length >= 3);
+}
+
+/* ----------------------------- one-item unlock ----------------------------- */
+
+const needKey = (name) => keyFor(name) || tokens(name).join(' ');
+/**
+ * The single addition that unlocks the most of the ideas that aren't buildable yet, computed from
+ * the real shortfalls: only ideas whose ONLY gap is one tool or one material count.
+ */
+export function bestSingleUnlock(notBuildable) {
+  const groups = new Map();
+  for (const idea of notBuildable) {
+    const needs = [...(idea.toolsMissing || []).map((t) => ({ name: t, price: 0, tool: true })), ...(idea.missing || []).map((m) => ({ name: m.name, price: (Number(m.estUnitPrice) || 0) * (Number(m.quantity) || 1) }))];
+    if (needs.length !== 1) continue;
+    const k = needKey(needs[0].name);
+    const g = groups.get(k) || { item: needs[0].name, tool: Boolean(needs[0].tool), estPrice: 0, ideas: [] };
+    g.estPrice = Math.max(g.estPrice, needs[0].price);
+    g.ideas.push(idea);
+    groups.set(k, g);
+  }
+  return [...groups.values()].sort((a, b) => b.ideas.length - a.ideas.length || a.estPrice - b.estPrice)[0] || null;
 }
 
 /** Plain-language flags from the user's own limits (budget, time). */
@@ -290,6 +359,8 @@ const inventoryForPrompt = (inventory) =>
     ...(i.quantityUnknown ? { quantityAssumed: 'amount not given — 1 is a placeholder; size designs small' } : {}),
     unit: i.unit,
     condition: i.condition,
+    // A photo identification the vision model wasn't sure about must not carry a design.
+    ...(i.source === 'ai_scan' && i.confidence != null && i.confidence < 0.6 ? { identification: `uncertain — recognised from a photo (${Math.round(i.confidence * 100)}% confident)` } : {}),
     dimensions: i.dimensions ? { ...i.dimensions, provenance: DIMENSION_STATUS[i.dimensions.status]?.label || i.dimensions.status } : 'unknown',
     replacementValue: i.unit_value,
   }));
@@ -302,7 +373,14 @@ const compact = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v 
 // The ideas array is generated in schema order, so a finished idea ends with its last field.
 const LAST_IDEA_FIELD = '"visualKind"';
 
-async function aiIdeas(request, inventory, { nudge = '', onDrafted } = {}) {
+// Two designers work in parallel (half the wait of one long answer), each on complementary
+// purposes so their lists overlap little; repeats are removed afterwards anyway.
+const ANGLES = [
+  'Your share: the most useful, practical products — storage and organisation, household fixes, tools and everyday aids. Also decide enoughForStrongProjects and unlock for the whole inventory.',
+  'Your share: products for OTHER purposes than storage and organisation — garden and plants, outdoor, kitchen, gifts and decor that still has a real use, kids, pets, hobbies and play. Another designer covers containers and organizers, so do not propose those. Also decide enoughForStrongProjects and unlock for the whole inventory.',
+];
+
+async function aiIdeas(request, inventory, { nudge = '', onDrafted, research = null, angle = '', count = config.ai.maxIdeas } = {}) {
   const payload = compact({
     inventory: inventoryForPrompt(inventory).map(compact),
     toolsOwned: request.userTools,
@@ -318,18 +396,19 @@ async function aiIdeas(request, inventory, { nudge = '', onDrafted } = {}) {
     goal: request.goal,
     targetMarginPct: request.targetMarginPct,
   });
-  const max = config.ai.maxIdeas;
+  const max = count;
+  const evidence = evidenceForPrompt(research);
   let drafted = 0;
   return structured({
     system: SYSTEM_IDEATION,
-    content: `Resources and constraints (JSON):\n${JSON.stringify(payload)}\n\nPropose ${max} genuinely different products these resources can make — different purposes, not variations of one product (each idea a different visualKind where possible), and use the other owned items too, not only the main material. Return fewer only if the materials truly cannot support ${max}. Keep every text field short.${nudge ? `\n\n${nudge}` : ''}`,
-    // A compact idea is ~250–350 tokens; the budget leaves room without allowing runaway output.
-    // The description reaches the model in prompt mode (no schema enforcement), where a small
-    // model otherwise tends to answer with an empty list.
-    schema: IdeaResult.extend({ ideas: IdeaResult.shape.ideas.max(max).describe(`${max} different products these materials can make — always propose some; an empty list only if nothing at all is possible`) }),
+    content: `Resources and constraints (JSON):\n${JSON.stringify(payload)}\n\n${evidence ? `${evidence}\n\n` : ''}Propose up to ${max} genuinely different products these exact resources can make — different purposes and constructions, not variations of one product (a different visualKind where possible). Use useful subsets of the items; not every item in every product. Include only products buildable with exactly these materials, amounts and tools. Best first. Keep every text field short.${angle ? `\n\n${angle}` : ''}${nudge ? `\n\n${nudge}` : ''}`,
+    // A compact idea is ~300–400 tokens with its steps; the budget leaves room without allowing
+    // runaway output. The description also reaches the model if the schema has to be sent in
+    // the instructions instead (see the 400 handling in client.js).
+    schema: IdeaResult.extend({ ideas: IdeaResult.shape.ideas.max(max).describe(`up to ${max} different products these exact materials and tools can make, best first; fewer when fewer are genuinely feasible`) }),
     effort: 'medium',
-    maxTokens: 650 * max + 500,
-    label: 'product ideas',
+    maxTokens: 650 * max + 600,
+    label: angle ? `product ideas ${ANGLES.indexOf(angle) + 1}/${ANGLES.length}` : 'product ideas',
     onProgress: onDrafted && ((text) => {
       const n = text.split(LAST_IDEA_FIELD).length - 1;
       if (n !== drafted) onDrafted((drafted = n));
@@ -468,9 +547,9 @@ function unavailable() {
 }
 
 /**
- * @param onProgress  optional ({stage:'parsing'|'ideas'|'checking', drafted?}) => void — real
- *                    pipeline events only (drafted = ideas the model has finished writing so far).
- * @returns {{status:'ok'|'unrecognized'|'empty'|'no_ideas', ideas:[], message?, parsed?, notes?, request?}}
+ * @param onProgress  optional ({stage:'parsing'|'researching'|'ideas'|'checking', drafted?, found?}) => void
+ *                    — real pipeline events only (drafted = ideas the model has finished writing so far).
+ * @returns {{status:'ok'|'unlock'|'unrecognized'|'empty'|'no_ideas', ideas:[], unlock?, research?, message?, parsed?, notes?, request?}}
  */
 export async function generateIdeas(request, inventory, { onProgress } = {}) {
   const req = { currency: 'GEL', quantity: 3, tools: [], skills: [], categories: [], ...request };
@@ -478,6 +557,10 @@ export async function generateIdeas(request, inventory, { onProgress } = {}) {
   const pre = precheckText(text);
   if (!pre.ok) return unrecognized(text, 'It contains no words.');
   if (!aiEnabled()) throw unavailable();
+
+  // Research starts now, from the raw text and the selected inventory — in parallel with the
+  // material parsing below instead of after it. It never throws; failures just mean no evidence.
+  const researchDone = researchIdeas({ text, inventory }).catch((err) => ({ sources: [], queries: [], error: `Web research failed (${err.message}).` }));
 
   let parsed = null;
   let adHoc = [];
@@ -514,53 +597,121 @@ export async function generateIdeas(request, inventory, { onProgress } = {}) {
     return { status: 'empty', ideas: [], parsed, message: 'Tell us which materials you have — type them, pick them from your inventory, or scan them.' };
   }
 
-  const onDrafted = onProgress && ((drafted) => onProgress({ stage: 'ideas', drafted }));
+  onProgress?.({ stage: 'researching' });
+  const research = await researchDone;
+  onProgress?.({ stage: 'researching', found: research.sources.length });
+
+  // Two designers in parallel, each asked for half the ideas from a complementary angle.
+  const drafts = ANGLES.map(() => 0);
+  const report = onProgress && (() => onProgress({ stage: 'ideas', drafted: drafts.reduce((a, b) => a + b, 0) }));
   onProgress?.({ stage: 'ideas', drafted: 0 });
-  let result = await aiIdeas(req, pool, { onDrafted });
-  // Small local models sometimes give up when details are missing. Ask once more,
-  // explicitly; if it still finds nothing, that answer is reported as-is.
-  if (!result.ideas.some((i) => i.name?.trim())) {
-    result = await aiIdeas(req, pool, { onDrafted, nudge: 'Your previous answer proposed no products. Missing quantities, sizes or skill level are not a reason to stop: assume small quantities and beginner hand skills and propose what these materials and tools CAN make. Return no ideas only if no product at all is possible.' });
+  const half = Math.ceil(config.ai.maxIdeas / ANGLES.length);
+  const runs = await Promise.allSettled(ANGLES.map((angle, k) => aiIdeas(req, pool, { research, angle, count: half, onDrafted: report && ((n) => { drafts[k] = n; report(); }) })));
+  let answers = runs.filter((r) => r.status === 'fulfilled').map((r) => r.value);
+  if (!answers.length) throw runs[0].reason;
+  if (answers.length < runs.length) console.warn(`[ideas] one idea call failed (${runs.find((r) => r.status === 'rejected').reason?.code || 'error'}); using the other one's ideas`);
+  // Best-first lists merged in turn (1st of each, then 2nd of each…), so modelRank stays fair.
+  const interleave = (lists) => Array.from({ length: Math.max(...lists.map((l) => l.length), 0) }, (_, i) => lists.map((l) => l[i]).filter(Boolean)).flat();
+  let candidates = interleave(answers.map((a) => a.ideas.filter((i) => i.name?.trim())));
+  // A model that gives up when details are missing is asked once more, explicitly — unless it
+  // said why (not enough for strong projects) and named the one item that would help.
+  if (!candidates.length && !answers.some((a) => a.unlock?.item?.trim())) {
+    const retry = await aiIdeas(req, pool, { research, count: config.ai.maxIdeas, onDrafted: report && ((n) => { drafts[0] = n; report(); }), nudge: 'Your previous answer proposed no products. Missing quantities, sizes or skill level are not a reason to stop: assume small quantities and beginner hand skills and propose what these materials and tools CAN make. If they truly cannot make anything useful, say so with enoughForStrongProjects=false and fill unlock.' });
+    answers = [retry];
+    candidates = retry.ideas.filter((i) => i.name?.trim());
   }
+  const modelUnlock = answers.map((a) => a.unlock).find((u) => u?.item?.trim()) || null;
+  const notes = answers.map((a) => a.notes).filter(Boolean).join(' ');
+
   onProgress?.({ stage: 'checking' });
   const testBatch = testBatchFor(req);
-  // Small local models sometimes repeat an idea ("Soy Wax Candle (2nd)"); a repeat is padding, not a new option.
-  // Judged first, de-duplicated after: an unrealistic idea is reported with its reason even when
-  // its name resembles a realistic one.
+  // Every idea is checked first (steps, materials, quantities, tools, physical sense), then
+  // repeats are removed — so an unrealistic idea is reported with its reason even when its name
+  // resembles a realistic one, and the best version of a repeated idea is the one kept.
   let ungrounded = 0;
-  const grounded = result.ideas.filter((i) => i.name?.trim()).map((i) => groundIdea(i, pool, testBatch, req));
+  const grounded = candidates.map((idea, rank) => {
+    const steps = concreteSteps(idea.steps);
+    if (steps.length < 2) return { rejected: true, name: idea.name, reason: 'its building steps were too vague to follow' };
+    const g = groundIdea({ ...idea, steps }, pool, testBatch, req);
+    return g && !g.rejected ? { ...g, modelRank: rank } : g;
+  });
   const rejected = grounded.filter((i) => i?.rejected).map(({ name, reason }) => ({ name, reason }));
-  const seen = [];
-  const isRepeat = (i) => {
-    const key = i.name.toLowerCase().replace(/\(.*?\)|\b(2nd|second|another|v\d)\b/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
-    // Same name, or a near-identical name for the same kind of product ("pen holder" / "pencil holder").
-    if (seen.some((s) => s.key === key || (s.kind === i.kind && nameSimilarity(s.key, key) >= 0.66))) return true;
-    seen.push({ key, kind: i.kind });
-    return false;
-  };
-  // Variety: at most two ideas of the same kind of product (a third "shelf" is not a new choice).
+  const kept = [];
   const perKind = {};
-  const ideas = grounded
-    .filter((i) => i || !++ungrounded)
-    .filter((i) => !i.rejected)
-    .filter((i) => !isRepeat(i))
-    .filter((i) => (perKind[i.kind] = (perKind[i.kind] || 0) + 1) <= 2)
-    .map((i) => finaliseIdea(i, req))
-    .sort(rankIdeas);
+  let repeats = 0;
+  for (const idea of grounded.filter((i) => i || !++ungrounded).filter((i) => !i.rejected).sort(rankIdeas)) {
+    if (kept.some((k) => isNearDuplicate(k.name, idea.name))) { repeats += 1; continue; }
+    // Variety: at most two ideas of the same specific kind (a third "shelf" is not a new choice) —
+    // judged by the kind the model chose, not one guessed from a word in the name ("Bottle …").
+    const capKind = idea.visualKind && idea.visualKind !== 'generic' ? idea.visualKind : null;
+    if (capKind && (perKind[capKind] = (perKind[capKind] || 0) + 1) > 2) { repeats += 1; continue; }
+    kept.push(idea);
+  }
+  const inspirationFor = (idea) => (idea.sourceRefs || []).map((n) => research.sources.find((s) => s.n === Math.round(n))).filter(Boolean).map(({ url, title }) => ({ url, title }));
+  const finals = kept.map((i) => finaliseIdea({ ...i, inspiration: inspirationFor(i) }, req));
+  // Shown as cards: only what can be built with exactly what they have (an amount to confirm is fine).
+  const buildable = finals.filter((i) => i.verdict === 'ready' || i.verdict === 'confirm');
+  const needsMore = finals.filter((i) => !buildable.includes(i));
   if (ungrounded) console.warn(`[ideas] dropped ${ungrounded} idea(s) that used nothing from the inventory`);
-  if (rejected.length) console.warn(`[ideas] rejected as physically unrealistic: ${rejected.map((r) => `${r.name} (${r.reason})`).join('; ')}`);
-  if (!ideas.length) {
+  if (repeats) console.log(`[ideas] removed ${repeats} near-duplicate idea(s)`);
+  if (rejected.length) console.warn(`[ideas] rejected as unrealistic: ${rejected.map((r) => `${r.name} (${r.reason})`).join('; ')}`);
+
+  // Not enough strong projects → the ONE addition that unlocks the most. Preferably computed from
+  // ideas we checked whose only gap is that item; otherwise the model's suggestion (if they don't own it).
+  let unlock = null;
+  if (buildable.length < MIN_STRONG) {
+    const best = bestSingleUnlock(needsMore);
+    const owns = (name) => Boolean(findInventoryItem(name, pool)) || (req.userTools || []).some((t) => nameSimilarity(t, name) >= 0.5);
+    const fromModel = modelUnlock && !owns(modelUnlock.item) ? modelUnlock : null;
+    const sameItem = best && fromModel && needKey(best.item) === needKey(fromModel.item);
+    if (best && (best.ideas.length >= 2 || sameItem || !fromModel)) {
+      unlock = {
+        item: best.item,
+        type: best.tool ? 'tool' : 'material',
+        why: sameItem ? fromModel.why : `${best.ideas.length === 1 ? 'One project we checked needs' : `${best.ideas.length} of the projects we checked need`} only this ${best.tool ? 'tool' : 'item'} on top of what you have.`,
+        estPrice: r2(best.estPrice || (sameItem ? fromModel.estPrice : 0)),
+        ideas: best.ideas,
+        checked: true,
+      };
+    } else if (fromModel) {
+      unlock = { item: fromModel.item.trim(), type: 'material', why: fromModel.why, estPrice: r2(Number(fromModel.estPrice) || 0), ideas: fromModel.ideas.slice(0, 4).map(({ name, summary }) => ({ name, summary })), checked: false };
+    }
+    if (unlock) unlock.currency = req.currency;
+  }
+  // Ideas that need something the user doesn't have are left out with the reason.
+  const unlockIds = new Set(unlock?.checked ? unlock.ideas.map((i) => i.id) : []);
+  for (const i of needsMore.filter((x) => !unlockIds.has(x.id))) {
+    const gaps = [...(i.toolsMissing || []), ...i.missing.map((m) => m.name)];
+    rejected.push({ name: i.name, reason: `needs ${gaps.join(', ')}, which you don’t have` });
+  }
+
+  const base = {
+    engine: 'ai',
+    parsed,
+    notes,
+    dropped: ungrounded,
+    rejected,
+    request: req,
+    pool: pool.map((p) => ({ name: p.name, quantity: p.quantity, unit: p.unit })),
+    research: { sources: research.sources.map(({ n, url, title }) => ({ n, url, title })), queries: research.queries, error: research.error || null },
+  };
+  // needsMore: checked ideas that need a tool or material the user lacks — listed as left out, never as cards.
+  base.needsMore = needsMore;
+  if (!buildable.length && unlock) {
+    return { ...base, status: 'unlock', ideas: [], unlock, message: 'I couldn’t find a strong, realistic project using only these materials.' };
+  }
+  if (!buildable.length) {
     return {
+      ...base,
       status: 'no_ideas',
       ideas: [],
-      parsed,
-      rejected,
+      unlock: null,
       message: rejected.length || ungrounded
         ? 'None of the AI’s suggestions hold up for these materials, so none are shown. Tell us more — amounts, sizes, and the tools you have — and try again.'
-        : result.notes || 'We couldn’t find a product these materials can realistically make. Add more materials or tools and try again.',
+        : notes || 'We couldn’t find a product these materials can realistically make. Add more materials or tools and try again.',
     };
   }
-  return { status: 'ok', ideas, engine: 'ai', parsed, notes: result.notes, dropped: ungrounded, rejected, request: req, pool: pool.map((p) => ({ name: p.name, quantity: p.quantity, unit: p.unit })) };
+  return { ...base, status: 'ok', ideas: buildable, unlock };
 }
 
 export async function generatePlan(project, inventory, currency, { region, research: existingResearch, withResearch = false } = {}) {

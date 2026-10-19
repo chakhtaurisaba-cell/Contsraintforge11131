@@ -20,6 +20,16 @@ let server;
 let client;
 let liveIdea = null;
 let liveProjectId = null;
+let isNearDuplicate;
+
+/** What the real model proposed, for a human to judge (cards, unlock, research). */
+function logResult(name, j) {
+  const lines = [`[live] CASE ${name}: ${j.status} · ${j.ideas.length} cards${j.research?.sources?.length ? ` · ${j.research.sources.length} web sources` : ''}${j.research?.error ? ` · research: ${j.research.error}` : ''}`];
+  for (const i of j.ideas) lines.push(`  - ${i.name} [${i.verdict}] uses: ${i.usesExisting.map((u) => `${u.quantityUsed} ${u.inventoryName}`).join(', ')} · tools: ${i.toolsRequired.join(', ') || '—'}\n      steps: ${i.steps.join(' | ')}`);
+  if (j.unlock) lines.push(`  unlock: ${j.unlock.item} — ${j.unlock.why} → ${j.unlock.ideas.map((i) => i.name).join(', ')}`);
+  if (j.rejected?.length) lines.push(`  left out: ${j.rejected.map((x) => `${x.name} (${x.reason})`).join('; ')}`);
+  console.log(lines.join('\n'));
+}
 
 /** HTTP request without fetch's 300 s header timeout. */
 function request(path, { method = 'GET', body, headers = {} } = {}) {
@@ -47,13 +57,14 @@ before(async () => {
   // Fail loudly (not skip) without a key or when Gemini is unreachable: these tests exist to
   // prove the real thing works.
   client = await import('../../server/ai/client.js');
+  ({ isNearDuplicate } = await import('../../server/services/ideation.js'));
   assert.ok(process.env.GEMINI_API_KEY?.trim(), 'GEMINI_API_KEY is not set — add it to .env (or the environment) to run the live Gemini tests.');
   assert.ok(!process.env.GEMINI_BASE_URL, 'GEMINI_BASE_URL is for the mock tests only; unset it for live tests.');
   const status = await client.probeAI();
   assert.equal(status.state, 'ready', `Gemini not ready: ${status.state} — ${status.maintainerHint}`);
 
   server = spawn(process.execPath, ['server/index.js'], {
-    env: { ...process.env, PORT: String(PORT), DB_PATH: join(dir, 'live.db'), SEARCH_PROVIDER: 'off' },
+    env: { ...process.env, PORT: String(PORT), DB_PATH: join(dir, 'live.db'), SEARCH_PROVIDER: process.env.SEARCH_PROVIDER || 'duckduckgo' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   server.stderr.on('data', (d) => process.stderr.write(`[server] ${d}`));
@@ -151,13 +162,16 @@ test('API: /scan sends a real photo to the vision model and returns validated ob
   }
 });
 
-test('API: sample inventory (3 pine boards, screws, wood glue, sandpaper, hammer, hand saw) gives realistic, complete, structured ideas', { timeout: 10 * MINUTES }, async () => {
+test('CASE C — 3 pine boards, screws, wood glue, sandpaper + hammer, hand saw: many realistic, complete woodworking ideas', { timeout: 10 * MINUTES }, async () => {
   const r = await postJSON('/ideas', { freeText: '3 pine boards, screws, wood glue, sandpaper, hammer, hand saw', quantity: 1 });
   assert.equal(r.status, 200, r.raw);
   assert.equal(r.json.status, 'ok', r.json.message);
   assert.equal(r.json.engine, 'ai');
   const ideas = r.json.ideas;
-  assert.ok(ideas.length >= 2, `expected several ideas, got ${ideas.length}`);
+  logResult('C', r.json);
+  assert.ok(ideas.length >= 5, `expected many ideas, got ${ideas.length}`);
+  for (const i of ideas) assert.ok(['ready', 'confirm'].includes(i.verdict), `${i.name} is a card but needs something: ${i.verdict}`);
+  for (const i of ideas) assert.ok(!ideas.some((j) => j !== i && isNearDuplicate(i.name, j.name)), `near-duplicates: ${i.name}`);
   console.log(`[live] ${ideas.length} ideas:\n${ideas.map((i) => `  - ${i.name} [${i.verdict}, ${i.difficulty}, ${i.estProductionMinutes} min] tools: ${i.toolsRequired.join(', ')}${i.toolsMissing.length ? ` (missing: ${i.toolsMissing.join(', ')})` : ''}${i.missing.length ? ` buy: ${i.missing.map((m) => `${m.quantity} ${m.name}`).join(', ')}` : ''}\n    why: ${i.whyFeasible}\n    steps: ${i.steps.join(' | ')}`).join('\n')}`);
   assert.equal(new Set(ideas.map((i) => i.name.toLowerCase())).size, ideas.length, 'no repeated ideas');
   for (const i of ideas) {
@@ -184,6 +198,68 @@ test('API: sample inventory (3 pine boards, screws, wood glue, sandpaper, hammer
     for (const t of power) assert.ok(i.toolsMissing.some((m) => m.toLowerCase().includes(t.toLowerCase().split(/[ /]/)[0])) || i.verdict !== 'ready', `${i.name} needs "${t}" but is marked ready`);
   }
   assert.ok(ideas.some((i) => i.verdict !== 'short'), 'at least one idea needs nothing bought');
+});
+
+const OWNED_ONLY = (ideas, re) => ideas.every((i) => i.usesExisting.every((u) => re.test(u.inventoryName)) && i.missing.length === 0);
+
+test('CASE A — plastic bottle + tape: several distinct ideas from only those (or an honest unlock)', { timeout: 10 * MINUTES }, async () => {
+  const r = await postJSON('/ideas', { freeText: 'plastic bottle, tape', quantity: 1 });
+  assert.equal(r.status, 200, r.raw);
+  logResult('A', r.json);
+  assert.ok(['ok', 'unlock'].includes(r.json.status), r.json.message);
+  assert.ok(OWNED_ONLY(r.json.ideas, /bottle|tape/i), 'cards use only the bottle and tape');
+  if (r.json.status === 'ok' && !r.json.unlock) assert.ok(r.json.ideas.length >= 3, `more than 2 ideas expected, got ${r.json.ideas.length}`);
+  if (r.json.unlock) assert.ok(r.json.unlock.item.trim() && !/bottle|tape/i.test(r.json.unlock.item), 'one NEW item');
+});
+
+test('CASE B — glass jar + tape + glue: only these, or exactly one item that unlocks projects', { timeout: 10 * MINUTES }, async () => {
+  const r = await postJSON('/ideas', { freeText: 'glass jar, tape, glue', quantity: 1 });
+  assert.equal(r.status, 200, r.raw);
+  logResult('B', r.json);
+  assert.ok(['ok', 'unlock'].includes(r.json.status), r.json.message);
+  assert.ok(OWNED_ONLY(r.json.ideas, /jar|glass|tape|glue/i), 'cards use only the jar, tape and glue');
+  if (r.json.status === 'unlock') {
+    assert.equal(r.json.ideas.length, 0);
+    assert.equal(typeof r.json.unlock.item, 'string');
+    assert.ok(r.json.unlock.item.trim() && !/,| and /.test(r.json.unlock.item.replace(/\(.*\)/, '')), `ONE item, not a list: ${r.json.unlock.item}`);
+    assert.ok(r.json.unlock.ideas.length >= 1, 'what it unlocks');
+  }
+});
+
+test('CASE D — rich inventory: different subsets, high diversity, no near-duplicates', { timeout: 10 * MINUTES }, async () => {
+  const r = await postJSON('/ideas', { freeText: '6 pine boards, a plywood sheet, 100 wood screws, wood glue, 8 glass jars, jute twine, 2 m cotton fabric, 5 cardboard boxes, 10 plastic bottles, acrylic paint, sandpaper, LED string lights. Tools: saw, drill, scissors, hot glue gun.', quantity: 1 });
+  assert.equal(r.status, 200, r.raw);
+  logResult('D', r.json);
+  assert.equal(r.json.status, 'ok', r.json.message);
+  const ideas = r.json.ideas;
+  assert.ok(ideas.length >= 6, `expected many ideas, got ${ideas.length}`);
+  const subsets = new Set(ideas.map((i) => i.usesExisting.map((u) => u.inventoryName.toLowerCase()).sort().join('+')));
+  assert.ok(subsets.size >= Math.min(5, ideas.length), 'different combinations of items');
+  assert.ok(new Set(ideas.flatMap((i) => i.usesExisting.map((u) => u.inventoryName.toLowerCase()))).size >= 6, 'many different items used');
+  for (const i of ideas) assert.ok(!ideas.some((j) => j !== i && isNearDuplicate(i.name, j.name)), `near-duplicates: ${i.name}`);
+});
+
+test('CASE E — minimal inventory: honest, and one high-value addition first', { timeout: 10 * MINUTES }, async () => {
+  const r = await postJSON('/ideas', { freeText: 'one bottle cap', quantity: 1 });
+  assert.equal(r.status, 200, r.raw);
+  logResult('E', r.json);
+  assert.ok(['unlock', 'no_ideas', 'ok'].includes(r.json.status));
+  assert.ok(r.json.ideas.length <= 2, 'a bottle cap alone does not make many strong projects');
+  if (r.json.status !== 'no_ideas') assert.ok(r.json.unlock?.item?.trim(), 'the one addition is named');
+});
+
+test('images: a picture of a real idea from Google’s image model (paid only — skipped with the reason if the key has no access)', { timeout: 3 * MINUTES }, async (t) => {
+  const idea = { name: 'Pine wall shelf', summary: 'A small wall shelf glued from one pine board.', usesExisting: [{ inventoryName: 'pine boards', use: 'shelf' }, { inventoryName: 'wood glue', use: 'joints' }], size: { length: 600, width: 150, height: 150 } };
+  const r = await postJSON('/ideas/image', { idea });
+  if (r.status === 503 && /images_(needs_billing|model_unavailable)/.test(r.json?.code)) {
+    console.log(`[live] image generation unavailable for this key: ${r.json.error}`);
+    t.skip(r.json.error);
+    return;
+  }
+  assert.equal(r.status, 200, r.raw.slice(0, 300));
+  assert.match(r.json.src, /^data:image\/(jpeg|png|webp);base64,/);
+  assert.ok(r.json.src.length > 20000, 'a real picture, not a placeholder');
+  console.log(`[live] picture: ${Math.round((r.json.src.length * 0.75) / 1024)} KB from ${r.json.model}`);
 });
 
 test('API: /ideas turns typed materials into AI-generated, scored product ideas',{ timeout: 15 * MINUTES }, async () => {
@@ -230,7 +306,7 @@ test('API: /assistant replies through the real model and stores the thread', { t
   const r = await postJSON('/assistant', { scope: 'page:dashboard', page: 'dashboard', message: 'In one sentence: what should I do first in this app?' });
   assert.equal(r.status, 200, r.raw);
   assert.ok(typeof r.json.reply === 'string' && r.json.reply.trim().length > 5);
-  assert.equal(r.json.searched, false);
+  assert.equal(typeof r.json.searched, 'boolean');
   const thread = await request('/assistant/thread?scope=page:dashboard');
   assert.equal(thread.json.messages.length, 2);
 });

@@ -119,9 +119,12 @@ export function checkFeasibility(idea, owned, tools = []) {
     }
     if (profile.sew && !SEWING.test(toolText) && !classes.includes('adhesive')) out.addTools.push('Needle or sewing machine');
   }
-  // Cutting the main material needs a tool that can cut it.
+  // Cutting the main material needs a tool that can cut it — when the design cuts it. The build
+  // steps say so; an idea without steps is assumed to need cutting.
   const cut = CUTS[primary];
-  if (cut && !(primary === 'wood' ? WOOD_CUTTER : CUTTER).test(toolText)) out.addTools.push(cut);
+  const steps = Array.isArray(idea.steps) ? idea.steps.join(' ') : '';
+  const cuts = !steps.trim() || /\b(cut|cuts|cutting|saw|sawing|trim|trimming|slice|snip|score|pierce|punch)\b/i.test(steps);
+  if (cut && cuts && !(primary === 'wood' ? WOOD_CUTTER : CUTTER).test(toolText)) out.addTools.push(cut);
 
   // A named component the product can't work without ("zipped bag", "alarm clock") that the
   // user doesn't have goes on the shopping list instead of being silently assumed.
@@ -150,12 +153,28 @@ const TOOL_FITS = [
   [/drill|driver/i, ['fastener']],
   [/sewing machine/i, []], // a needle does the same job; covered by the sewing rule
 ];
-export function relevantModelTools(toolsRequired = [], owned = []) {
+// Steps that use a tool imply it, whatever the tool list says ("Drill 6 mm holes…").
+const STEP_TOOLS = [
+  [/\bdrill(s|ed|ing)?\b/i, 'Drill / driver'],
+  [/\bsolder(s|ed|ing)?\b/i, 'Soldering iron'],
+  [/\b(sew|sews|sewn|sewing|stitch|stitches|stitching)\b/i, 'Needle or sewing machine'],
+];
+/**
+ * The model's tools that matter for this design: those that fit the materials (a drill for
+ * screws, a soldering iron for electronics) or that its own build steps actually use, plus
+ * tools the steps imply.
+ */
+export function relevantModelTools(toolsRequired = [], owned = [], steps = []) {
   const classes = new Set(owned.map((o) => materialClass(o.item)));
-  return toolsRequired.filter((t) => {
+  const stepText = (Array.isArray(steps) ? steps : [steps]).join(' ');
+  const named = toolsRequired.filter((t) => {
     const fit = TOOL_FITS.find(([re]) => re.test(t));
-    return fit ? fit[1].some((c) => classes.has(c)) : false;
+    if (fit && fit[1].some((c) => classes.has(c))) return true;
+    const word = String(t).toLowerCase().match(/[a-z]{4,}/)?.[0];
+    return Boolean(fit && word && new RegExp(`\\b${word}`, 'i').test(stepText));
   });
+  const implied = STEP_TOOLS.filter(([re, tool]) => re.test(stepText) && !named.some((t) => re.test(t) || t === tool)).map(([, tool]) => tool);
+  return [...named, ...implied];
 }
 
 // Supplies whose exact amount rarely decides whether a build can start.

@@ -87,7 +87,7 @@ export const requestScope = new AsyncLocalStorage();
 /* ------------------------------ Gemini calls ------------------------------ */
 
 let client = null;
-function gemini() {
+export function gemini() {
   client ||= new GoogleGenAI({ apiKey: config.ai.apiKey, ...(config.ai.baseUrl ? { httpOptions: { baseUrl: config.ai.baseUrl } } : {}) });
   return client;
 }

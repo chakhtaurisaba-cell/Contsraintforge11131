@@ -750,6 +750,17 @@ details.disclosure[open] > summary .chev { transform: rotate(180deg); }
   left: 8px; bottom: 8px; padding: 3px 7px; border-radius: 999px;
   color: #fff; background: rgba(0, 0, 0, 0.45); backdrop-filter: blur(4px);
 }
+.product-preview figcaption.is-loading { display: inline-flex; align-items: center; gap: 5px; color: var(--accent); }
+.product-preview.is-photo figcaption.is-loading { color: #fff; }
+.product-preview.is-generated img { animation: cf-fade-in 0.5s var(--ease-out); }
+@keyframes cf-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .product-preview.is-generated img { animation: none; } }
+
+/* one-item unlock suggestion */
+.unlock-card { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.unlock-item { font-size: 18px; font-weight: 600; }
+.unlock-ideas { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.unlock-ideas li { list-style: none; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); min-width: 0; }
 
 /* card hover: a gentle lift and a slow zoom on photos */
 .idea-card { transition: border-color var(--dur-1), box-shadow var(--dur-2), transform var(--dur-2) var(--ease-out); }

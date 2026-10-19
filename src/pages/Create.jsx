@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -54,6 +54,7 @@ function GeneratingState({ progress, startedAt, hasText, onCancel }) {
   const stage = progress?.stage;
   const steps = [
     hasText && { id: 'parsing', label: 'Reading what you have' },
+    { id: 'researching', label: progress?.found ? `Researching what people build — ${progress.found} sources` : 'Researching what people build from these materials' },
     { id: 'ideas', label: progress?.stage === 'ideas' && progress.drafted ? `Designing products — ${progress.drafted} drafted` : 'Designing products' },
     { id: 'checking', label: 'Checking every idea against your stock' },
   ].filter(Boolean);
@@ -123,13 +124,38 @@ function UsesYour({ idea }) {
   );
 }
 
-function IdeaCard({ idea, photo, selected, onCompare, onDetails, onSave, onDevelop, busy }) {
+/** Asks for the card's own picture once the card is (nearly) on screen — nothing is generated for unseen cards. */
+function useWhenVisible(onVisible) {
+  const ref = useRef(null);
+  const cb = useRef(onVisible);
+  cb.current = onVisible;
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !cb.current) return undefined;
+    if (typeof IntersectionObserver === 'undefined') {
+      cb.current();
+      return undefined;
+    }
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) {
+        io.disconnect();
+        cb.current?.();
+      }
+    }, { rootMargin: '200px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
+  return ref;
+}
+
+function IdeaCard({ idea, photo, image, onVisible, selected, onCompare, onDetails, onSave, onDevelop, busy }) {
   const meta = [DIFFICULTY[idea.difficulty], idea.estProductionMinutes > 0 && `~${idea.estProductionMinutes} min each`].filter(Boolean);
+  const ref = useWhenVisible(onVisible);
   return (
-    <motion.article layout className={`idea-card ${selected ? 'selected' : ''}`}>
+    <motion.article layout className={`idea-card ${selected ? 'selected' : ''}`} ref={ref}>
       <div className="idea-card-media">
         <button type="button" onClick={onDetails} aria-label={`Details for ${idea.name}`}>
-          <ProductPreview idea={idea} photo={photo} />
+          <ProductPreview idea={idea} photo={photo} image={image?.src ? image : null} imageLoading={image?.loading} />
         </button>
         <label className="idea-compare" title="Compare up to 3 ideas"><input type="checkbox" checked={selected} onChange={onCompare} />Compare</label>
       </div>
@@ -167,14 +193,14 @@ function ResearchBlock({ idea, state, onResearch }) {
 }
 
 /** Everything about one idea, in one calm place — the card stays short. */
-function IdeaDetails({ idea, photo, onClose, onSave, onDevelop, busy, researchState, onResearch }) {
+function IdeaDetails({ idea, photo, image, onClose, onSave, onDevelop, busy, researchState, onResearch }) {
   const cur = idea.currency;
   const materials = (idea.materials || []).filter((m) => m.status !== 'optional_upgrade');
   return (
     <Modal open onClose={onClose} title={idea.name} wide>
       <div className="idea-details">
         <div className="stack" style={{ gap: 10 }}>
-          <ProductPreview idea={idea} photo={photo} />
+          <ProductPreview idea={idea} photo={photo} image={image?.src ? image : null} imageLoading={image?.loading} />
           <p className="text-2">{idea.summary || idea.tagline}</p>
           <Verdict idea={idea} />
           <div className="xs muted">{[DIFFICULTY[idea.difficulty], idea.estProductionMinutes > 0 && `~${idea.estProductionMinutes} min per unit`, idea.priceLow > 0 && `sells for ~${money(idea.priceLow, cur)}–${money(idea.priceHigh, cur)}`].filter(Boolean).join(' · ')} <span className="muted">(estimates)</span></div>
@@ -217,6 +243,7 @@ function IdeaDetails({ idea, photo, onClose, onSave, onDevelop, busy, researchSt
             </details>
           )}
           {idea.whyFeasible && <p className="small"><span className="muted">Why it works: </span>{idea.whyFeasible}</p>}
+          {idea.toolsRequired?.length > 0 && <p className="small"><span className="muted">Tools: </span>{idea.toolsRequired.join(', ')}</p>}
           {idea.steps?.length > 0 && (
             <section>
               <div className="label" style={{ marginBottom: 6 }}>How to build it</div>
@@ -230,6 +257,11 @@ function IdeaDetails({ idea, photo, onClose, onSave, onDevelop, busy, researchSt
               {idea.sellable?.note && <><span className="muted">{idea.sellable.realistic ? 'Selling: ' : 'Not really for sale: '}</span>{idea.sellable.note}</>}
             </p>
           )}
+          {idea.inspiration?.length > 0 && (
+            <p className="xs muted">
+              Inspired by: {idea.inspiration.map((s, i) => <span key={s.url}>{i > 0 && ' · '}<a href={s.url} target="_blank" rel="noopener noreferrer">{s.title}</a></span>)}
+            </p>
+          )}
           <ResearchBlock idea={idea} state={researchState} onResearch={onResearch} />
         </div>
       </div>
@@ -238,6 +270,39 @@ function IdeaDetails({ idea, photo, onClose, onSave, onDevelop, busy, researchSt
         <Button variant="primary" onClick={onDevelop} loading={busy === `dev-${idea.id}`}>Open blueprint<ArrowRight size={14} /></Button>
       </div>
     </Modal>
+  );
+}
+
+/** The ONE addition that unlocks good projects — shown only when the inventory alone makes too few. */
+function UnlockPanel({ unlock, onAdd, alone }) {
+  return (
+    <Card className="unlock-card">
+      <div className="stack" style={{ gap: 12 }}>
+        <div>
+          <div className="label">{alone ? 'Smallest addition that would help' : 'Want more options? Add one thing'}</div>
+          <div className="row" style={{ gap: 8, marginTop: 4 }}>
+            <PackagePlus size={18} className="accent-text" aria-hidden="true" />
+            <span className="unlock-item">{unlock.item}</span>
+            {unlock.estPrice > 0 && <span className="small muted">~{money(unlock.estPrice, unlock.currency)} (estimate)</span>}
+          </div>
+          {unlock.why && <p className="small text-2" style={{ marginTop: 6 }}>{unlock.why}</p>}
+        </div>
+        {unlock.ideas?.length > 0 && (
+          <div>
+            <div className="xs muted" style={{ marginBottom: 6 }}>What becomes possible{unlock.checked ? ' (checked against your inventory)' : ''}:</div>
+            <ul className="unlock-ideas">
+              {unlock.ideas.map((i) => (
+                <li key={i.id || i.name}>
+                  <div className="small strong">{i.name}</div>
+                  <div className="xs muted">{i.summary}</div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        <div><Button variant={alone ? 'primary' : ''} icon={Plus} onClick={onAdd}>I have it — add {unlock.item.length > 28 ? 'it' : unlock.item} and show ideas</Button></div>
+      </div>
+    </Card>
   );
 }
 
@@ -258,7 +323,49 @@ export default function Create() {
   const [compare, setCompare] = useState([]);
   const [showCompare, setShowCompare] = useState(false);
   const [detailsId, setDetailsId] = useState(null);
+  // Pictures generated for each idea: { loading } | { src, model } | { error }. Requested when a
+  // card comes into view, at most two at a time; the ideas never wait for them.
+  const [images, setImages] = useState({});
+  const [imagesNote, setImagesNote] = useState(null);
+  const imageQueue = useRef({ active: 0, waiting: [], off: false, requested: new Set() });
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  const imagesAvailable = health?.ai?.images ? health.ai.images.enabled && !['off', 'unconfigured', 'needs_billing', 'model_unavailable', 'daily_limit'].includes(health.ai.images.state) : true;
+  const requestImage = useCallback((idea) => {
+    const q = imageQueue.current;
+    if (!imagesAvailable || q.off || q.requested.has(idea.id)) return;
+    q.requested.add(idea.id);
+    const runOne = async () => {
+      q.active += 1;
+      setImages((m) => ({ ...m, [idea.id]: { loading: true } }));
+      try {
+        const body = {
+          name: idea.name,
+          summary: idea.summary || '',
+          kind: idea.kind,
+          visualKind: idea.visualKind,
+          primaryMaterial: idea.primaryMaterial,
+          usesExisting: (idea.usesExisting || []).map((u) => ({ inventoryName: u.inventoryName, use: u.use || '' })),
+          missing: (idea.missing || []).map((m) => ({ name: m.name })),
+          size: idea.size,
+        };
+        const r = await api.post('/ideas/image', { idea: body });
+        setImages((m) => ({ ...m, [idea.id]: { src: r.src, model: r.model } }));
+      } catch (err) {
+        setImages((m) => ({ ...m, [idea.id]: { error: err.message } }));
+        // The account can't make pictures (no billing, limit reached…): stop asking for this session.
+        if (/^images_(needs_billing|model_unavailable|off|daily_limit|unconfigured)$/.test(err.code || '')) {
+          q.off = true;
+          setImagesNote(err.message);
+        }
+      } finally {
+        q.active -= 1;
+        q.waiting.shift()?.();
+      }
+    };
+    if (q.active < 2) runOne();
+    else q.waiting.push(runOne);
+  }, [imagesAvailable]);
 
   const items = inv.data || [];
   const selected = selectedInv ?? items.map((i) => i.id);
@@ -282,8 +389,11 @@ export default function Create() {
     }
   }
 
-  async function generate() {
+  async function generate(addItem) {
     if (inFlight.current) return; // one request at a time — no duplicate model calls
+    const extra = typeof addItem === 'string' ? addItem.trim() : '';
+    const payload = extra ? { ...form, freeText: form.freeText.trim() ? `${form.freeText.trim()}, ${extra}` : extra } : form;
+    if (extra) setForm(payload);
     const ac = new AbortController();
     inFlight.current = ac;
     setResult(null);
@@ -291,9 +401,11 @@ export default function Create() {
     setCompare([]);
     setDetailsId(null);
     setResearchState(null);
+    setImages({});
+    imageQueue.current = { active: 0, waiting: [], off: imageQueue.current.off, requested: new Set() };
     setGenerating({ startedAt: Date.now(), progress: null });
     try {
-      const r = await api.stream('/ideas', { ...form, inventoryIds: selected, currency, region: settings?.region }, {
+      const r = await api.stream('/ideas', { ...payload, inventoryIds: selected, currency, region: settings?.region }, {
         signal: ac.signal,
         onEvent: (ev) => setGenerating((g) => (g ? { ...g, progress: ev } : g)),
       });
@@ -310,7 +422,9 @@ export default function Create() {
   async function createProject(idea, develop) {
     const key = `${develop ? 'dev' : 'save'}-${idea.id}`;
     await run(key, async () => {
-      const p = await api.post('/projects', { idea });
+      // The picture generated for this idea goes with it, so the project shows the same one.
+      const img = images[idea.id];
+      const p = await api.post('/projects', { idea: img?.src ? { ...idea, image: { src: img.src, model: img.model } } : idea });
       if (p.addedToInventory?.length) {
         toast(`Added what you described to your inventory: ${p.addedToInventory.join(', ')}`);
         inv.reload();
@@ -369,9 +483,10 @@ export default function Create() {
         <details className="disclosure">
           <summary><Info size={15} />How ideas are checked and ordered<ChevronDown size={16} className="chev" /></summary>
           <ol className="list small" style={{ paddingBottom: 14 }}>
-            <li>Every material an idea claims is matched to your inventory and checked against the amount you have. Ideas that use nothing you own are not shown.</li>
-            <li>Ideas you can build right now come first, then ideas that need a size or amount confirmed, then ones that need a tool, then ones that need a purchase.</li>
-            <li>Within each group: more of the parts from your own stock first, then the lower cost of anything missing, then easier and quicker builds.</li>
+            <li>The AI first looks up what people really build from similar materials, then designs products for your exact materials and tools.</li>
+            <li>Every material an idea claims is matched to your inventory and checked against the amount you have; tools and physical sense are checked too. Only ideas you can build with what you have become cards — near-duplicates are merged.</li>
+            <li>Ideas you can build right now come first, then ones that need an amount or size confirmed; within each, the most useful and simplest first.</li>
+            <li>If your materials can make fewer than three strong projects, you get the one item that would unlock the most — never a shopping list.</li>
           </ol>
         </details>
 
@@ -379,7 +494,7 @@ export default function Create() {
           <Button icon={ScanLine} onClick={() => nav('/app/scan')}>Scan instead</Button>
           {health && !aiEnabled && <span className="xs warn-text">The AI service isn’t set up, so ideas can’t be generated yet.</span>}
           <div className="spacer" />
-          <Button variant="primary" size="lg" icon={Sparkles} onClick={generate} loading={Boolean(generating)} disabled={!form.freeText.trim() && !selected.length}>Generate ideas</Button>
+          <Button variant="primary" size="lg" icon={Sparkles} onClick={() => generate()} loading={Boolean(generating)} disabled={!form.freeText.trim() && !selected.length}>Generate ideas</Button>
         </div>
       </section>
 
@@ -389,11 +504,23 @@ export default function Create() {
           <Banner tone="danger">
             <div className="row-between">
               <span>{genError.message}</span>
-              {(genError.retryable || genError.code === 'network') && <Button size="sm" icon={RotateCcw} onClick={generate}>Try again</Button>}
+              {(genError.retryable || genError.code === 'network') && <Button size="sm" icon={RotateCcw} onClick={() => generate()}>Try again</Button>}
             </div>
           </Banner>
         )}
-        {result && !generating && result.status !== 'ok' && (
+        {result && !generating && result.status === 'unlock' && (
+          <div className="stack-lg">
+            <Banner tone="info">{result.message}</Banner>
+            <UnlockPanel unlock={result.unlock} alone onAdd={() => generate(result.unlock.item)} />
+            {result.rejected?.length > 0 && (
+              <details className="xs muted left-out">
+                <summary>{result.rejected.length} idea{result.rejected.length === 1 ? '' : 's'} checked and left out</summary>
+                <ul className="list">{result.rejected.map((x) => <li key={x.name}><strong>{x.name}</strong> — {x.reason}</li>)}</ul>
+              </details>
+            )}
+          </div>
+        )}
+        {result && !generating && result.status !== 'ok' && result.status !== 'unlock' && (
           <Card className="quiet">
             <Empty icon={result.status === 'unrecognized' ? HelpCircle : PackagePlus} title={result.status === 'unrecognized' ? 'We couldn’t tell what materials you have' : result.status === 'empty' ? 'Add some materials first' : 'No realistic products found'} action={<div className="row"><Button icon={ScanLine} onClick={() => nav('/app/scan')}>Scan my materials</Button><Button variant="ghost" onClick={() => document.querySelector('.composer-input')?.focus()}>Edit description</Button></div>}>
               {result.message}
@@ -406,10 +533,13 @@ export default function Create() {
               <div style={{ minWidth: 0 }}>
                 <h2 style={{ fontSize: 20 }}>{result.ideas.length} {result.ideas.length === 1 ? 'idea' : 'ideas'} for your materials</h2>
                 {result.parsed && <p className="xs muted">Understood from your text: {[...(result.parsed.materials || []).map((m) => m.name), ...(result.parsed.tools || [])].join(', ') || '—'}{result.parsed.budget ? ` · budget ${result.parsed.budget} ${result.parsed.currency || ''}` : ''}{result.parsed.hoursPerWeek ? ` · ${result.parsed.hoursPerWeek} h/week` : ''}</p>}
+                {result.research?.sources?.length > 0 && <p className="xs muted">Researched online first: {result.research.sources.length} real projects people build from similar materials, each checked against your exact inventory.</p>}
+                {result.research?.error && <p className="xs muted">{result.research.error}</p>}
+                {imagesNote && <p className="xs muted">Pictures: {imagesNote} Cards show a drawn illustration instead.</p>}
                 {result.dropped > 0 && <p className="xs muted">{result.dropped} suggestion{result.dropped === 1 ? '' : 's'} hidden because {result.dropped === 1 ? 'it didn’t' : 'they didn’t'} use your materials.</p>}
                 {result.rejected?.length > 0 && (
                   <details className="xs muted left-out">
-                    <summary>{result.rejected.length} suggestion{result.rejected.length === 1 ? '' : 's'} left out because {result.rejected.length === 1 ? 'it doesn’t' : 'they don’t'} make physical sense with these materials</summary>
+                    <summary>{result.rejected.length} suggestion{result.rejected.length === 1 ? '' : 's'} left out — {result.rejected.length === 1 ? 'it needs' : 'they need'} something you don’t have or {result.rejected.length === 1 ? 'doesn’t' : 'don’t'} hold up with these materials</summary>
                     <ul className="list">{result.rejected.map((x) => <li key={x.name}><strong>{x.name}</strong> — {x.reason}</li>)}</ul>
                   </details>
                 )}
@@ -422,6 +552,8 @@ export default function Create() {
                   <IdeaCard
                     idea={idea}
                     photo={photos[result.ideas.indexOf(idea)]}
+                    image={images[idea.id]}
+                    onVisible={() => requestImage(idea)}
                     busy={busy}
                     selected={compare.includes(idea.id)}
                     onCompare={() => setCompare((c) => (c.includes(idea.id) ? c.filter((x) => x !== idea.id) : [...c, idea.id].slice(-3)))}
@@ -432,6 +564,7 @@ export default function Create() {
                 </StaggerItem>
               ))}
             </Stagger>
+            {result.unlock && <UnlockPanel unlock={result.unlock} onAdd={() => generate(result.unlock.item)} />}
           </div>
         )}
       </div>
@@ -440,6 +573,7 @@ export default function Create() {
         <IdeaDetails
           idea={details}
           photo={photos[result.ideas.indexOf(details)]}
+          image={images[details.id]}
           busy={busy}
           researchState={researchState}
           onResearch={() => research(result.runId)}

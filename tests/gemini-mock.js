@@ -9,6 +9,8 @@
 import http from 'node:http';
 
 export const MOCK_KEY = 'test-key-not-a-real-secret';
+// A few bytes that start like a JPEG — enough for the app, which never decodes the picture.
+const TINY_JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 0x4a, 0x46, 0x49, 0x46, 0xff, 0xd9]).toString('base64');
 
 function normalise(model, stream, body) {
   const messages = [];
@@ -41,17 +43,26 @@ const STATUS_NAME = { 400: 'INVALID_ARGUMENT', 401: 'UNAUTHENTICATED', 403: 'PER
  * @param {(call, state) => string | {status:number, error:string} | {text?:string, functionCalls?:[], finishReason?:string}} onGenerate
  */
 export function startGeminiMock(onGenerate, { model = 'gemini-3.8-flash' } = {}) {
-  const state = { calls: [], model, modelAvailable: true, keyValid: true, lastKey: null };
+  const state = { calls: [], imageCalls: [], onImage: () => null, delayMs: 0, model, modelAvailable: true, keyValid: true, lastKey: null };
   const server = http.createServer((req, res) => {
     let raw = '';
     req.on('data', (c) => (raw += c));
-    req.on('end', () => {
+    req.on('end', async () => {
       const sendError = (status, message) => {
         res.writeHead(status, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ error: { code: status, message, status: STATUS_NAME[status] || 'UNKNOWN' } }));
       };
       state.lastKey = req.headers['x-goog-api-key'] || null;
       if (!state.keyValid || state.lastKey !== MOCK_KEY) return sendError(400, 'API key not valid. Please pass a valid API key.');
+      // Image generation (Interactions API): POST /v1beta/interactions.
+      if (req.method === 'POST' && req.url.startsWith('/v1beta/interactions')) {
+        const body = raw ? JSON.parse(raw) : {};
+        state.imageCalls.push(body);
+        const r = state.onImage(body, state);
+        if (r && r.status) return sendError(r.status, r.error);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ id: `int-${state.imageCalls.length}`, status: 'completed', steps: [{ type: 'model_output', content: [{ type: 'image', mime_type: 'image/jpeg', data: r?.data || TINY_JPEG }] }] }));
+      }
       const m = req.url.match(/^\/v1beta\/models\/([^:?/]+)(?::(generateContent|streamGenerateContent))?/);
       if (!m) return sendError(404, 'not found');
       const [, name, action] = m;
@@ -62,7 +73,11 @@ export function startGeminiMock(onGenerate, { model = 'gemini-3.8-flash' } = {})
       }
       const stream = action === 'streamGenerateContent';
       const call = normalise(name, stream, raw ? JSON.parse(raw) : {});
+      call.receivedAt = Date.now();
       state.calls.push(call);
+      // Optional latency, to show that independent calls overlap.
+      if (state.delayMs) await new Promise((r) => setTimeout(r, state.delayMs));
+      call.answeredAt = Date.now();
       const r = onGenerate(call, state);
       if (r && typeof r === 'object' && r.status) return sendError(r.status, r.error);
       const msg = typeof r === 'string' ? { text: r } : r || {};
