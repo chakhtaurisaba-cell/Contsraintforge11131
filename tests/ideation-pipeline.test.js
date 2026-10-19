@@ -31,6 +31,9 @@ before(async () => {
     if (mode === 'reject_thinking' && body.raw.generationConfig?.thinkingConfig) return { status: 400, error: 'Request contains an invalid argument.' };
     const sys = body.messages[0].content;
     const user = body.messages.at(-1).content;
+    if (sys.startsWith('You are the product-ideation engine') && /«[a-z]{6,}»/.test(user)) {
+      return JSON.stringify({ inputRecognized: false, unrecognizedReason: 'Random letters, no objects.', ideas: [], enoughForStrongProjects: false, unlock: { item: '', why: '', estPrice: 0, ideas: [] }, notes: '' });
+    }
     if (sys.startsWith('You extract a structured inventory')) {
       if (/^[a-z]{6,}$/.test(user.trim())) return JSON.stringify({ recognized: false, unrecognizedReason: 'Random letters, no objects.', materials: [], tools: [], skills: [], budget: null, currency: null, hoursPerWeek: null });
       if (/^some /.test(user)) return JSON.stringify({ recognized: true, unrecognizedReason: '', materials: [{ name: 'wooden boards', material: 'wood', quantity: 0, quantityStated: false, unit: 'pcs' }, { name: 'screws', material: 'steel', quantity: 0, quantityStated: false, unit: 'pcs' }, { name: 'metal brackets', material: 'steel', quantity: 0, quantityStated: false, unit: 'pcs' }], tools: [], skills: [], budget: null, currency: null, hoursPerWeek: null });
@@ -72,7 +75,8 @@ test('1 — meaningless text produces no ideas, only a request for a real descri
   assert.equal(r.status, 'unrecognized');
   assert.deepEqual(r.ideas, []);
   assert.match(r.message, /couldn’t recognise/);
-  assert.equal(mock.calls.length, 1, 'stops after the parse — never falls back to saved inventory or templates');
+  assert.equal(mock.calls.length, 1, 'one call, which says the text names no objects — never falls back to saved inventory or templates');
+  assert.match(mock.calls[0].messages.at(-1).content, /«sydvfyqwdq»/, 'the model sees the user’s own words');
 });
 
 test('1 — text without any letters is rejected before calling the model', async () => {
@@ -127,13 +131,13 @@ test('4 — materials named without an amount are owned, not bought, and the mod
   assert.ok(!shelf.missing.some((m) => /screw|bracket/i.test(m.name)), JSON.stringify(shelf.missing));
 });
 
-test('3 — when the model proposes nothing, it is asked once more; a second empty answer is reported honestly', async () => {
+test('3 — when the model proposes nothing, that is reported honestly — no second Gemini call', async () => {
   mode = 'empty';
   mock.calls = [];
   const r = await ideation.generateIdeas({ freeText: 'wooden boards and screws', currency: 'GEL' }, []);
   assert.equal(r.status, 'no_ideas');
   assert.deepEqual(r.ideas, []);
-  assert.equal(mock.calls.filter((c) => c.messages[0].content.startsWith('You are the product-ideation engine')).length, 3, 'two parallel calls, then one explicit retry');
+  assert.equal(mock.calls.length, 1, 'ONE Gemini call: the typed inventory is parsed on the server, and an empty answer is not retried');
   mode = 'ok';
 });
 
@@ -348,10 +352,9 @@ test('ideas flow with a 400 INVALID_ARGUMENT: the invalid feature is found with 
   assert.ok(all(r).length >= 1, 'the ideas were generated and checked');
   const client = await import('../server/ai/client.js');
   assert.equal(client.aiStatus().invalidArgument.feature, 'thinkingConfig');
-  assert.equal(client.aiStatus().invalidArgument.call, 'parse materials');
-  const parseCalls = mock.calls.filter((c) => c.messages[0].content.startsWith('You extract a structured inventory'));
-  assert.equal(parseCalls.length, 2, 'one rejected request, one accepted');
-  assert.ok(parseCalls[1].format, 'structured output is kept — only thinking was removed');
+  assert.equal(client.aiStatus().invalidArgument.call, 'product ideas');
+  assert.equal(mock.calls.length, 2, 'one rejected request, one accepted — the only Gemini calls');
+  assert.ok(mock.calls[1].format, 'structured output is kept — only thinking was removed');
   assert.ok(mock.calls.every((c, i) => i === 0 || !c.raw.generationConfig?.thinkingConfig), 'later calls skip it');
   mode = 'ok';
 });

@@ -47,21 +47,49 @@ async function getText(url, init = {}, timeoutMs = 15000) {
 
 // DuckDuckGo shows a captcha when searches arrive in quick bursts; keep them spaced out.
 let ddgNext = 0;
+const ddgWaiting = new Set(); // searches waiting for their turn — released at once if DuckDuckGo blocks us
 async function ddgTurn() {
   const wait = ddgNext - Date.now();
   ddgNext = Math.max(Date.now(), ddgNext) + 2500;
-  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  if (wait > 0) {
+    await new Promise((resolve) => {
+      const done = () => { clearTimeout(timer); ddgWaiting.delete(done); resolve(); };
+      const timer = setTimeout(done, wait);
+      ddgWaiting.add(done);
+    });
+  }
 }
 
-async function searchDuckDuckGo(query, max) {
+// After DuckDuckGo blocks this server (403, 429 or a captcha — common from cloud IPs such as
+// Vercel's), no further searches are sent for a while: they would fail the same way and only
+// cost time. Callers continue without research.
+const DDG_BLOCK_MS = 10 * 60 * 1000;
+let ddgBlockedUntil = 0;
+const ddgBlocked = (why) => {
+  ddgBlockedUntil = Date.now() + DDG_BLOCK_MS;
+  console.warn(`[search] DuckDuckGo blocked this server (${why}) — skipping web search for ${DDG_BLOCK_MS / 60000} min`);
+  [...ddgWaiting].forEach((release) => release()); // queued searches stop waiting and fail at once
+  return new SearchError(`DuckDuckGo blocked the search (${why}).`, 'search_rate_limited');
+};
+const PAUSED = () => new SearchError('DuckDuckGo search is paused after it blocked this server.', 'search_rate_limited');
+
+async function searchDuckDuckGo(query, max, timeoutMs) {
+  if (ddgBlockedUntil > Date.now()) throw PAUSED();
   await ddgTurn();
-  const res = await getText('https://html.duckduckgo.com/html/', {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ q: query, kl: '' }).toString(),
-  });
+  if (ddgBlockedUntil > Date.now()) throw PAUSED();
+  let res;
+  try {
+    res = await getText('https://html.duckduckgo.com/html/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ q: query, kl: '' }).toString(),
+    }, timeoutMs);
+  } catch (err) {
+    if (/HTTP (403|429)\b/.test(err.message)) throw ddgBlocked(err.message.match(/HTTP \d+/)[0]);
+    throw err;
+  }
   const html = await res.text();
-  if (/anomaly-modal|captcha/i.test(html) && !/result__a/.test(html)) throw new SearchError('DuckDuckGo asked for a captcha (too many searches). Try again in a few minutes.', 'search_rate_limited');
+  if (/anomaly-modal|captcha/i.test(html) && !/result__a/.test(html)) throw ddgBlocked('captcha');
   const out = [];
   const blocks = html.split(/<div[^>]+class="[^"]*\bresult\b[^"]*"/).slice(1);
   for (const b of blocks) {
@@ -80,22 +108,22 @@ async function searchDuckDuckGo(query, max) {
   return out;
 }
 
-async function searchSearxng(query, max) {
+async function searchSearxng(query, max, timeoutMs) {
   const u = new URL('/search', config.search.searxngUrl);
   u.searchParams.set('q', query);
   u.searchParams.set('format', 'json');
-  const data = await (await getText(u.toString(), { headers: { accept: 'application/json' } })).json();
+  const data = await (await getText(u.toString(), { headers: { accept: 'application/json' } }, timeoutMs)).json();
   return (data.results || []).slice(0, max).map((r) => ({ url: r.url, title: r.title || '', snippet: r.content || '' }));
 }
 
 /** One real web search. Returns [{url, title, snippet}]. */
-export async function webSearch(query, { max = 5 } = {}) {
+export async function webSearch(query, { max = 5, timeoutMs = 15000 } = {}) {
   const st = searchStatus();
   if (!st.available) throw new SearchError(st.missing ? `Web search needs ${st.missing} in .env.` : 'Web search is turned off (SEARCH_PROVIDER=off).', 'search_not_configured');
   const fn = { duckduckgo: searchDuckDuckGo, searxng: searchSearxng }[st.provider];
   if (!fn) throw new SearchError(`Unknown SEARCH_PROVIDER "${st.provider}".`, 'search_not_configured');
   try {
-    return (await fn(String(query).slice(0, 300), max)).filter((r) => r.url && r.title);
+    return (await fn(String(query).slice(0, 300), max, timeoutMs)).filter((r) => r.url && r.title);
   } catch (err) {
     if (err instanceof SearchError) throw err;
     throw new SearchError(`Search failed: ${err.message}`);

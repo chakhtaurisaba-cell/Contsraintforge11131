@@ -9,9 +9,10 @@
 // The parametric templates in engine/templates.js are used only to plan the clearly
 // labelled example projects (idea.engine === 'demo').
 import { z } from 'zod';
-import { aiEnabled, aiConfigured, structured, AIError } from '../ai/client.js';
-import { IdeaResult, BuildPlan, ParsedResources } from '../ai/schemas.js';
-import { SYSTEM_IDEATION, SYSTEM_PLAN, SYSTEM_PARSE } from '../ai/prompts.js';
+import { aiEnabled, aiConfigured, structured, AIError, checkRateLimit, requestScope } from '../ai/client.js';
+import { IdeaResult, BuildPlan } from '../ai/schemas.js';
+import { SYSTEM_IDEATION, SYSTEM_PLAN } from '../ai/prompts.js';
+import { parseInventoryText } from './inventoryParse.js';
 import { templateById } from '../engine/templates.js';
 import { matchesKey, MATERIALS, keyFor, TOOLS } from '../engine/lexicon.js';
 import { fromUSD, itemDimsMM, roundTo } from '../engine/units.js';
@@ -372,7 +373,6 @@ const inventoryForPrompt = (inventory) =>
     replacementValue: i.unit_value,
   }));
 
-const aiParseFreeText = (text) => structured({ system: SYSTEM_PARSE, content: text, schema: ParsedResources, effort: 'low', maxTokens: 700, label: 'parse materials' });
 
 /** Drops null, empty-string and empty-array fields so the prompt carries only real information. */
 const compact = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v != null && v !== '' && !(Array.isArray(v) && !v.length)));
@@ -380,14 +380,7 @@ const compact = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v 
 // The ideas array is generated in schema order, so a finished idea ends with its last field.
 const LAST_IDEA_FIELD = '"visualKind"';
 
-// Two designers work in parallel (half the wait of one long answer), each on complementary
-// purposes so their lists overlap little; repeats are removed afterwards anyway.
-const ANGLES = [
-  'Your share: the most useful, practical products — storage and organisation, household fixes, tools and everyday aids. Also decide enoughForStrongProjects and unlock for the whole inventory.',
-  'Your share: products for OTHER purposes than storage and organisation — garden and plants, outdoor, kitchen, gifts and decor that still has a real use, kids, pets, hobbies and play. Another designer covers containers and organizers, so do not propose those. Also decide enoughForStrongProjects and unlock for the whole inventory.',
-];
-
-async function aiIdeas(request, inventory, { nudge = '', onDrafted, research = null, angle = '', count = config.ai.maxIdeas } = {}) {
+async function aiIdeas(request, inventory, { onDrafted, research = null, count = config.ai.maxIdeas, deadline } = {}) {
   const payload = compact({
     inventory: inventoryForPrompt(inventory).map(compact),
     toolsOwned: request.userTools,
@@ -408,14 +401,15 @@ async function aiIdeas(request, inventory, { nudge = '', onDrafted, research = n
   let drafted = 0;
   return structured({
     system: SYSTEM_IDEATION,
-    content: `Resources and constraints (JSON):\n${JSON.stringify(payload)}\n\n${evidence ? `${evidence}\n\n` : ''}Propose up to ${max} genuinely different products these exact resources can make — different purposes and constructions, not variations of one product (a different visualKind where possible). Use useful subsets of the items; not every item in every product. Include only products buildable with exactly these materials, amounts and tools. Best first. Keep every text field short.${angle ? `\n\n${angle}` : ''}${nudge ? `\n\n${nudge}` : ''}`,
+    content: `${request.freeText?.trim() ? `What the user typed (their own words): «${request.freeText.trim().slice(0, 1500)}»\n\n` : ''}Resources and constraints (JSON):\n${JSON.stringify(payload)}\n\n${evidence ? `${evidence}\n\n` : ''}Propose up to ${max} genuinely different products these exact resources can make — different purposes and constructions, not variations of one product (a different visualKind where possible). Use useful subsets of the items; not every item in every product. Cover different purposes: practical storage and household items, but also garden, kitchen, gifts with a real use, kids, pets, hobbies and play — whatever these materials genuinely suit. Include only products buildable with exactly these materials, amounts and tools. Best first. Keep every text field short: 3–6 short steps per idea (the full build guide comes later).`,
     // A compact idea is ~300–400 tokens with its steps; the budget leaves room without allowing
     // runaway output. The description also reaches the model if the schema has to be sent in
     // the instructions instead (see the 400 handling in client.js).
     schema: IdeaResult.extend({ ideas: IdeaResult.shape.ideas.max(max).describe(`up to ${max} different products these exact materials and tools can make, best first; fewer when fewer are genuinely feasible`) }),
-    effort: 'medium',
-    maxTokens: 650 * max + 600,
-    label: angle ? `product ideas ${ANGLES.indexOf(angle) + 1}/${ANGLES.length}` : 'product ideas',
+    effort: 'low',
+    maxTokens: 450 * max + 600,
+    label: 'product ideas',
+    deadline,
     onProgress: onDrafted && ((text) => {
       const n = text.split(LAST_IDEA_FIELD).length - 1;
       if (n !== drafted) onDrafted((drafted = n));
@@ -585,16 +579,35 @@ export async function generateIdeas(request, inventory, { onProgress } = {}) {
   const pre = precheckText(text);
   if (!pre.ok) return unrecognized(text, 'It contains no words.');
   if (!aiEnabled()) throw unavailable();
+  // During a Gemini rate-limit wait, stop before doing anything (no research, no Gemini call).
+  checkRateLimit();
+
+  // One time budget for the whole pipeline: every Gemini call gets what is left of it, and no
+  // retry starts that could not finish in time. Stage timings are logged as [perf] lines.
+  const t0 = Date.now();
+  const deadline = t0 + config.ai.ideasBudgetMs;
+  const perf = (stage, since) => console.log(`[perf] ${stage}: ${Date.now() - since} ms`);
 
   // Research starts now, from the raw text and the selected inventory — in parallel with the
-  // material parsing below instead of after it. It never throws; failures just mean no evidence.
-  const researchDone = researchIdeas({ text, inventory, tools: req.tools || [] }).catch((err) => ({ sources: [], queries: [], error: `Web research failed (${err.message}).` }));
+  // material parsing below instead of after it. It is capped at a few seconds and never throws.
+  const tResearch = Date.now();
+  const researchDone = researchIdeas({ text, inventory, tools: req.tools || [] })
+    .catch((err) => ({ sources: [], queries: [], error: `Web research failed (${err.message}).` }))
+    .finally(() => {
+      perf('research', tResearch);
+      // For the final [perf] line of /api/ideas, also when the request ends with an error.
+      const scope = requestScope.getStore();
+      if (scope) scope.researchMs = Date.now() - tResearch;
+    });
 
   let parsed = null;
   let adHoc = [];
   if (text) {
     onProgress?.({ stage: 'parsing' });
-    parsed = await aiParseFreeText(text);
+    const tParse = Date.now();
+    // Read on the server with plain rules — no Gemini call (see inventoryParse.js).
+    parsed = parseInventoryText(text);
+    perf('inventory parse (local, no Gemini)', tParse);
     const invented = parsed.materials.filter((m) => !mentioned(text, m.name));
     if (invented.length) console.warn(`[ideas] dropped materials the text never mentions: ${invented.map((m) => m.name).join(', ')}`);
     parsed = { ...parsed, materials: parsed.materials.filter((m) => mentioned(text, m.name)).map((m) => (m.quantityStated && !amountStated(text, m.name) ? { ...m, quantityStated: false } : m)) };
@@ -626,32 +639,26 @@ export async function generateIdeas(request, inventory, { onProgress } = {}) {
   }
 
   onProgress?.({ stage: 'researching' });
+  const tWait = Date.now();
   const research = await researchDone;
+  if (Date.now() - tWait > 50) perf('waited for research after parsing', tWait);
   onProgress?.({ stage: 'researching', found: research.sources.length });
 
-  // Two designers in parallel, each asked for half the ideas from a complementary angle.
-  const drafts = ANGLES.map(() => 0);
-  const report = onProgress && (() => onProgress({ stage: 'ideas', drafted: drafts.reduce((a, b) => a + b, 0) }));
+  // ONE structured Gemini call for all the ideas (streamed, so the progress counter is real).
+  const report = onProgress && ((n) => onProgress({ stage: 'ideas', drafted: n }));
   onProgress?.({ stage: 'ideas', drafted: 0 });
-  const half = Math.ceil(config.ai.maxIdeas / ANGLES.length);
-  const runs = await Promise.allSettled(ANGLES.map((angle, k) => aiIdeas(req, pool, { research, angle, count: half, onDrafted: report && ((n) => { drafts[k] = n; report(); }) })));
-  let answers = runs.filter((r) => r.status === 'fulfilled').map((r) => r.value);
-  if (!answers.length) throw runs[0].reason;
-  if (answers.length < runs.length) console.warn(`[ideas] one idea call failed (${runs.find((r) => r.status === 'rejected').reason?.code || 'error'}); using the other one's ideas`);
-  // Best-first lists merged in turn (1st of each, then 2nd of each…), so modelRank stays fair.
-  const interleave = (lists) => Array.from({ length: Math.max(...lists.map((l) => l.length), 0) }, (_, i) => lists.map((l) => l[i]).filter(Boolean)).flat();
-  let candidates = interleave(answers.map((a) => a.ideas.filter((i) => i.name?.trim())));
-  // A model that gives up when details are missing is asked once more, explicitly — unless it
-  // said why (not enough for strong projects) and named the one item that would help.
-  if (!candidates.length && !answers.some((a) => a.unlock?.item?.trim())) {
-    const retry = await aiIdeas(req, pool, { research, count: config.ai.maxIdeas, onDrafted: report && ((n) => { drafts[0] = n; report(); }), nudge: 'Your previous answer proposed no products. Missing quantities, sizes or skill level are not a reason to stop: assume small quantities and beginner hand skills and propose what these materials and tools CAN make. If they truly cannot make anything useful, say so with enoughForStrongProjects=false and fill unlock.' });
-    answers = [retry];
-    candidates = retry.ideas.filter((i) => i.name?.trim());
-  }
-  const modelUnlock = answers.map((a) => a.unlock).find((u) => u?.item?.trim()) || null;
-  const notes = answers.map((a) => a.notes).filter(Boolean).join(' ');
+  const tIdeas = Date.now();
+  const answer = await aiIdeas(req, pool, { research, onDrafted: report, deadline });
+  perf('Gemini ideas', tIdeas);
+  // The same call says whether the typed text names real objects at all. Only an explicit "no"
+  // with a reason and no ideas counts (a missing field is filled with false by the JSON repair).
+  if (text && answer.inputRecognized === false && answer.unrecognizedReason?.trim() && !answer.ideas.length) return unrecognized(text, answer.unrecognizedReason);
+  const candidates = answer.ideas.filter((i) => i.name?.trim());
+  const modelUnlock = answer.unlock?.item?.trim() ? answer.unlock : null;
+  const notes = answer.notes || '';
 
   onProgress?.({ stage: 'checking' });
+  const tCheck = Date.now();
   const testBatch = testBatchFor(req);
   // Every idea is checked first (steps, materials, quantities, tools, physical sense), then
   // repeats are removed — so an unrealistic idea is reported with its reason even when its name
@@ -733,6 +740,8 @@ export async function generateIdeas(request, inventory, { onProgress } = {}) {
   };
   // needsMore: checked ideas that need a tool or material the user lacks — listed as left out, never as cards.
   base.needsMore = needsMore;
+  perf('validation', tCheck);
+  console.log(`[perf] total ideas pipeline: ${Date.now() - t0} ms (${buildable.length} cards from ${candidates.length} candidates)`);
   if (!buildable.length && unlock) {
     return { ...base, status: 'unlock', ideas: [], unlock, message: 'I couldn’t find a strong, realistic project using only these materials.' };
   }

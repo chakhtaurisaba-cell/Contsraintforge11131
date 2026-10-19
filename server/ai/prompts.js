@@ -57,9 +57,10 @@ Propose physical products that can realistically be made from the supplied inven
 - visualKind: the picture closest to the finished product (e.g. a candle in a glass jar → candle_jar, a single wall-mounted board → wall_shelf).
 - safetyNote: one short precaution only when this product genuinely needs it (open flame, load on a wall, sharp edges for children); otherwise an empty string.
 - whyFeasible: say concretely why these materials, amounts and tools are enough (e.g. "one 1000 mm board gives both 300 mm sides and the 400 mm shelf").
-- steps: 3–8 short, concrete steps in build order that use only the listed materials and tools, with measurements where they matter ("Cut two 300 mm sides from one board with the hand saw"). No vague steps such as "assemble the pieces".
+- steps: 3–6 short, concrete steps in build order (the project page expands them into a full beginner guide) that use only the listed materials and tools, with measurements where they matter ("Cut two 300 mm sides from one board with the hand saw"). No vague steps such as "assemble the pieces".
 - potentialUse: who would use it and for what. sellable.realistic: true only if a buyer would plausibly pay for it as made; sellable.note: one short, honest selling suggestion, or why it is not worth selling.
 - Photos: when the inventory comes from photos, use what was identified in them together with the typed materials. Items marked as uncertain identifications must not be the critical part of a design.
+- The inventory was read from the user's text by simple rules. Use the user's own words (given separately) to understand what each item really is. inputRecognized: false only when that text names no identifiable physical materials, objects or tools at all (random characters, keyboard mashing, unrelated sentences) — then return no ideas and say why in unrecognizedReason. Unfamiliar but real object names, brands and other languages are fine.
 - Never guarantee sales or profit.
 - Write for a non-expert: short sentences, everyday words, no internal jargon.
 ${HONESTY}`;

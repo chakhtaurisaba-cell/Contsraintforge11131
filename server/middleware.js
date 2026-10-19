@@ -53,10 +53,13 @@ export function errorHandler(err, _req, res, _next) {
     message = err.code === 'LIMIT_FILE_SIZE' ? `Image too large (max ${config.uploads.maxImageBytes / 1024 / 1024} MB).` : `Upload rejected: ${err.code}`;
   }
   if (err instanceof ZodError) status = 400;
-  if (status >= 500) {
+  // Expected service errors (rate limit, timeout…) are already logged where they happen.
+  if (status >= 500 && !err.status) {
     console.error('[error]', err);
     // Never leak internals for unexpected errors.
     if (!err.status) message = 'Something went wrong on the server.';
   }
-  res.status(status).json({ error: message, code: err.code || undefined, retryable: err.retryable || undefined });
+  // A rate limit says how long to wait, as a header and in the body.
+  if (err.retryAfter) res.set('Retry-After', String(err.retryAfter));
+  res.status(status).json({ error: message, code: err.code || undefined, retryable: err.retryable || undefined, retryAfter: err.retryAfter || undefined });
 }

@@ -10,7 +10,14 @@ import { config } from '../config.js';
 
 const CACHE_TTL_MS = 60 * 60 * 1000;
 const cache = new Map(); // query → { at, results }
-const DEADLINE_MS = 8000;
+// Research must never hold up the ideas: whatever has arrived after this long is used, and the
+// rest is dropped (each search request also gives up on its own after this long).
+const DEADLINE_MS = Math.max(300, Number(process.env.AI_RESEARCH_TIMEOUT_MS) || 2000);
+// When a whole research round returns nothing (provider down, blocked with 403/429, timing out),
+// research is skipped for this long, so each request doesn't wait on the same broken provider.
+const FAILURE_PAUSE_MS = 10 * 60 * 1000;
+let pausedUntil = 0;
+let pausedWhy = '';
 
 const TOOL_WORDS = /\b(saw|hand ?saw|hacksaw|jigsaw|hammer|drill|driver|screwdriver|scissors|knife|cutter|glue gun|sander|clamps?|tape measure|ruler|pliers|wrench|spanner|sewing machine|needle|soldering iron|chisel|file|plane|brush|stapler)\b/i;
 const LEADING_AMOUNT = /^(about |around |roughly |approx\.? )?((\d+([.,]\d+)?|a|an|one|two|three|four|five|six|seven|eight|nine|ten|dozen|half|a few|few|some|several|lots of|a lot of|many|pair of|a pair of)\s+)?((box|bag|pack|roll|bottle|tube|sheet|piece|pieces|pcs|kg|g|m|cm|mm|metres?|meters?|litres?|liters?|l)\s+(of\s+)?)?/i;
@@ -45,13 +52,16 @@ export function researchQueries({ materials, tools }) {
 }
 
 /** Tests only: forget cached searches. */
-export const resetResearchCache = () => cache.clear();
+export const resetResearchCache = () => {
+  cache.clear();
+  pausedUntil = 0;
+};
 
 async function cachedSearch(query) {
   const key = query.toLowerCase();
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.results;
-  const results = await webSearch(query, { max: 6 });
+  const results = await webSearch(query, { max: 6, timeoutMs: DEADLINE_MS });
   cache.set(key, { at: Date.now(), results });
   if (cache.size > 200) cache.delete(cache.keys().next().value);
   return results;
@@ -64,6 +74,9 @@ async function cachedSearch(query) {
 export async function researchIdeas({ text = '', inventory = [], tools = [] } = {}) {
   if (!config.ai.ideaResearch) return { sources: [], queries: [], skipped: 'off' };
   if (!searchAvailable()) return { sources: [], queries: [], skipped: 'no_search' };
+  if (pausedUntil > Date.now()) {
+    return { sources: [], queries: [], skipped: 'paused', error: `Web research is paused for ${Math.ceil((pausedUntil - Date.now()) / 60000)} min after it failed (${pausedWhy}), so the ideas are the AI’s own reasoning.` };
+  }
   const fromText = phrasesFromText(text);
   const phrases = {
     materials: [...new Set([...fromText.materials, ...inventory.filter((i) => !TOOL_WORDS.test(i.name)).map((i) => i.name.toLowerCase())])],
@@ -72,20 +85,22 @@ export async function researchIdeas({ text = '', inventory = [], tools = [] } = 
   const queries = researchQueries(phrases);
   if (!queries.length) return { sources: [], queries: [] };
   const t0 = Date.now();
-  const settled = await Promise.race([
-    Promise.allSettled(queries.map(cachedSearch)),
-    new Promise((resolve) => setTimeout(() => resolve(null), DEADLINE_MS)),
-  ]);
-  if (!settled) {
-    console.warn(`[research] idea research gave up after ${DEADLINE_MS / 1000}s`);
-    return { sources: [], queries, error: 'Web research took too long, so the ideas are the AI’s own reasoning.' };
-  }
+  // Searches run in parallel; results are kept as they arrive, so a slow search only loses its
+  // own results — the ones that finished in time are still used.
+  const done = queries.map(() => null); // { ok: results } | { error }
+  const all = Promise.all(queries.map((q, i) => cachedSearch(q).then((value) => { done[i] = { ok: value }; }, (error) => { done[i] = { error }; })));
+  let timer;
+  await Promise.race([all, new Promise((resolve) => { timer = setTimeout(resolve, DEADLINE_MS); })]);
+  clearTimeout(timer);
+  // A search aborted by its own time limit is "too slow", like one still running.
+  const late = done.filter((d) => !d || /abort|time ?out/i.test(d.error?.message || '')).length;
+  if (late) console.warn(`[research] ${late} of ${queries.length} searches still running after ${DEADLINE_MS} ms — continuing without them`);
   const seen = new Set();
   const perSite = {};
   const sources = [];
-  for (const r of settled) {
-    if (r.status !== 'fulfilled') continue;
-    for (const s of r.value) {
+  for (const r of done) {
+    if (!r?.ok) continue;
+    for (const s of r.ok) {
       const key = s.url.replace(/[#?].*$/, '').replace(/\/$/, '');
       if (seen.has(key)) continue;
       // Variety: at most 3 results from one site.
@@ -95,12 +110,18 @@ export async function researchIdeas({ text = '', inventory = [], tools = [] } = 
       sources.push({ n: sources.length + 1, url: s.url, title: s.title.slice(0, 140), snippet: (s.snippet || '').slice(0, 260) });
     }
   }
-  const failed = settled.filter((r) => r.status === 'rejected');
-  console.log(`[research] ${queries.length} searches → ${sources.length} results in ${((Date.now() - t0) / 1000).toFixed(1)}s${failed.length ? ` (${failed.length} failed: ${failed[0].reason?.message})` : ''}`);
+  const failed = done.filter((d) => d?.error && !/abort|time ?out/i.test(d.error.message || ''));
+  console.log(`[research] ${queries.length} searches → ${sources.length} results in ${((Date.now() - t0) / 1000).toFixed(1)}s${failed.length ? ` (${failed.length} failed: ${failed[0].error?.message})` : ''}`);
+  const nothing = !done.some((d) => d?.ok);
+  if (nothing) {
+    pausedUntil = Date.now() + FAILURE_PAUSE_MS;
+    pausedWhy = late ? 'too slow' : failed[0]?.error?.message?.slice(0, 80) || 'no results';
+    console.warn(`[research] no results (${pausedWhy}) — skipping web research for ${FAILURE_PAUSE_MS / 60000} min`);
+  }
   return {
     sources: sources.slice(0, 14),
     queries,
-    ...(failed.length === settled.length ? { error: 'Web research is unavailable right now, so the ideas are the AI’s own reasoning.' } : {}),
+    ...(nothing ? { error: late > 0 && !failed.length ? 'Web research took too long, so the ideas are the AI’s own reasoning.' : 'Web research is unavailable right now, so the ideas are the AI’s own reasoning.' } : {}),
   };
 }
 

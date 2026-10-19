@@ -11,8 +11,10 @@ export { resolveKind, resolveMaterial };
 
 // Saved projects without a picture ask the server for one (generated once, then stored with the
 // project) — at most two at a time across the page.
-const queue = { active: 0, waiting: [], done: new Map() };
+const queue = { active: 0, waiting: [], done: new Map(), off: null };
 function requestProjectImage(id) {
+  // Pictures are switched off or unavailable on this server: stop asking (no request at all).
+  if (queue.off) return Promise.reject(queue.off);
   if (queue.done.has(id)) return queue.done.get(id);
   const p = new Promise((resolve, reject) => {
     const run = () => {
@@ -26,7 +28,10 @@ function requestProjectImage(id) {
     else queue.waiting.push(run);
   });
   queue.done.set(id, p);
-  p.catch(() => queue.done.delete(id)); // a later visit may try again
+  p.catch((err) => {
+    queue.done.delete(id); // a later visit may try again…
+    if (/^images_(off|needs_billing|model_unavailable|daily_limit|unconfigured)$/.test(err?.code || '')) queue.off = err; // …unless pictures are off for this server
+  });
   return p;
 }
 

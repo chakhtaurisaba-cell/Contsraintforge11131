@@ -25,9 +25,12 @@ export const config = {
     // Tests only: point the SDK at a local stand-in server instead of Google.
     baseUrl: (process.env.GEMINI_BASE_URL || '').trim() || undefined,
     enabled: process.env.AI_ENABLED !== 'false',
-    // Candidate ideas asked from the model per request (split over two parallel calls); unrealistic
-    // and repeated ones are filtered out afterwards, so fewer are shown when fewer hold up.
-    maxIdeas: Math.max(2, Math.min(16, num(process.env.AI_MAX_IDEAS, 12))),
+    // Candidate ideas asked from the model in ONE structured call; unrealistic and repeated ones are
+    // filtered out afterwards, so fewer are shown when fewer hold up. 8 keeps the answer fast.
+    maxIdeas: Math.max(2, Math.min(16, num(process.env.AI_MAX_IDEAS, 8))),
+    // The whole /api/ideas pipeline (parse → research → ideas → checks) must finish within this;
+    // each Gemini call gets what is left of it, and a retry is skipped when there is no time for it.
+    ideasBudgetMs: num(process.env.AI_IDEAS_BUDGET_MS, onVercel ? 90000 : 120000),
     // Web research before ideation (searches only, no page downloads): discovers possibilities.
     ideaResearch: process.env.AI_IDEA_RESEARCH !== 'off',
     // Card pictures from Google's image model (separate from gemini-3.8-flash; paid only — no

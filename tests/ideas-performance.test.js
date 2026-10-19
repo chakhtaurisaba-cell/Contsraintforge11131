@@ -28,6 +28,7 @@ const JAR = [
 ];
 
 let searchDelay = 0;
+let searchRequests = 0;
 let mock;
 let searx;
 let ideation;
@@ -35,10 +36,10 @@ let app;
 const perfLines = [];
 
 before(async () => {
-  searx = http.createServer((req, res) => setTimeout(() => {
+  searx = http.createServer((req, res) => (searchRequests++, setTimeout(() => {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ results: [{ url: 'https://example.org/bottle-crafts', title: 'Bottle crafts', content: 'Pen holders, funnels and scoops.' }] }));
-  }, searchDelay));
+  }, searchDelay)));
   await new Promise((r) => searx.listen(0, '127.0.0.1', r));
   mock = await startGeminiMock((call) => {
     const sys = call.messages[0].content;
@@ -88,7 +89,8 @@ test('production-like: plastic bottle + tape + scissors → cards from ONE idea 
   assert.ok(final.data.ideas.length >= 3, final.data.ideas.map((i) => i.name).join(', '));
   assert.ok(final.data.ideas.every((i) => i.steps.filter((s) => /\bcut\b(?!\s+(edge|rim))/i.test(s)).every((s) => /scissors/i.test(s))), 'the quality gate still runs');
   assert.equal(mock.calls.filter((c) => c.messages[0].content.startsWith('You are the product-ideation engine')).length, 1, 'one idea call');
-  assert.equal(mock.calls.length, 2, 'parse + ideas — nothing else');
+  assert.equal(mock.calls.length, 1, 'ONE Gemini call: the inventory is parsed on the server, research uses no Gemini');
+  assert.ok(perfLines.some((l) => l.startsWith('[perf] total /api/ideas:') && l.endsWith('Gemini API calls: 1')), perfLines.join(' | '));
   assert.equal(mock.imageCalls.length, 0, 'pictures are never generated inside /api/ideas');
   assert.deepEqual([...new Set(progress.map((p) => p.stage))], ['parsing', 'researching', 'ideas', 'checking']);
   for (const stage of ['research', 'inventory parse', 'Gemini ideas', 'validation', 'total ideas pipeline', 'total /api/ideas']) assert.ok(perfLines.some((l) => l.startsWith(`[perf] ${stage}`)), `missing [perf] ${stage}: ${perfLines.join(' | ')}`);
@@ -114,8 +116,16 @@ test('slow search never holds up the ideas: whatever arrived within the research
   const ms = Date.now() - t0;
   searchDelay = 0;
   assert.equal(r.status, 'ok');
-  assert.ok(ms < 1500, `took ${ms} ms despite a 5 s search`);
+  assert.ok(ms < 1000, `took ${ms} ms despite a 5 s search (limit 500 ms)`);
   assert.match(r.research.error, /took too long/);
+  // The failure is remembered: the next requests don't wait on the same slow provider at all.
+  searchRequests = 0;
+  const t1 = Date.now();
+  const r2 = await ideation.generateIdeas({ freeText: 'plastic bottle, tape', tools: ['Scissors'], quantity: 1, currency: 'GEL' }, []);
+  assert.equal(r2.status, 'ok');
+  assert.equal(searchRequests, 0, 'no search request while research is paused');
+  assert.match(r2.research.error, /paused for 10 min/);
+  assert.ok(Date.now() - t1 < 300);
 });
 
 test('a Gemini answer slower than the time budget: one timeout naming the stage, no doomed retry, diagnostic in /api/health', async () => {

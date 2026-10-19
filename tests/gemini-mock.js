@@ -48,9 +48,11 @@ export function startGeminiMock(onGenerate, { model = 'gemini-3.8-flash' } = {})
     let raw = '';
     req.on('data', (c) => (raw += c));
     req.on('end', async () => {
-      const sendError = (status, message) => {
-        res.writeHead(status, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: { code: status, message, status: STATUS_NAME[status] || 'UNKNOWN' } }));
+      // retryDelay: Google's RetryInfo in the body ("17s"); retryAfter: a Retry-After header (seconds).
+      const sendError = (status, message, { retryDelay, retryAfter } = {}) => {
+        res.writeHead(status, { 'content-type': 'application/json', ...(retryAfter != null ? { 'retry-after': String(retryAfter) } : {}) });
+        const details = retryDelay ? [{ '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay }] : undefined;
+        res.end(JSON.stringify({ error: { code: status, message, status: STATUS_NAME[status] || 'UNKNOWN', ...(details ? { details } : {}) } }));
       };
       state.lastKey = req.headers['x-goog-api-key'] || null;
       if (!state.keyValid || state.lastKey !== MOCK_KEY) return sendError(400, 'API key not valid. Please pass a valid API key.');
@@ -79,7 +81,7 @@ export function startGeminiMock(onGenerate, { model = 'gemini-3.8-flash' } = {})
       if (state.delayMs) await new Promise((r) => setTimeout(r, state.delayMs));
       call.answeredAt = Date.now();
       const r = onGenerate(call, state);
-      if (r && typeof r === 'object' && r.status) return sendError(r.status, r.error);
+      if (r && typeof r === 'object' && r.status) return sendError(r.status, r.error, r);
       const msg = typeof r === 'string' ? { text: r } : r || {};
       const usageMetadata = { promptTokenCount: 100, candidatesTokenCount: 10, totalTokenCount: 110 };
       const finishReason = msg.finishReason || 'STOP';

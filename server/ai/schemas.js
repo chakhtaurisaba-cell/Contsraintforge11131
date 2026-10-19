@@ -91,7 +91,7 @@ export const ProductIdea = z.object({
   size: z.object({ length: num, width: num, height: num }).describe('approximate finished size in mm (length = widest side)'),
   safetyNote: str.describe('one short precaution specific to this product, or empty'),
   dependsOnMeasurements: z.array(str).describe('sizes the user must check before building'),
-  steps: z.array(str).describe('3–8 short, concrete building steps using the user’s own materials and tools, with measurements where relevant'),
+  steps: z.array(str).describe('3–6 short, concrete building steps using the user’s own materials and tools, with measurements where relevant (the full guide comes later)'),
   potentialUse: str.describe('who would use it and for what, in one short sentence'),
   sellable: z.object({
     realistic: z.boolean().describe('true only if a buyer would plausibly pay for it as made from these materials'),
@@ -112,6 +112,9 @@ export const UnlockSuggestion = z.object({
 });
 
 export const IdeaResult = z.object({
+  // Decided in the same call (no separate parsing request): gibberish gets no ideas.
+  inputRecognized: z.boolean().describe('false when the user’s own text names no identifiable physical materials, objects or tools (gibberish, random characters, unrelated text); true otherwise, and true when there is no typed text'),
+  unrecognizedReason: str.describe('one short plain sentence when inputRecognized=false, else empty'),
   ideas: z.array(ProductIdea),
   enoughForStrongProjects: z.boolean().describe('false when these exact materials and tools cannot make at least 3 genuinely useful, realistic products'),
   unlock: UnlockSuggestion,

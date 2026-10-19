@@ -37,7 +37,8 @@ app.use(express.json({ limit: '2mb' }));
 app.use('/api', (req, res, next) => {
   const ac = new AbortController();
   res.on('close', () => { if (!res.writableEnded) ac.abort(); });
-  requestScope.run({ signal: ac.signal }, next);
+  // geminiCalls: every Gemini request made while handling this API request (logged by /api/ideas).
+  requestScope.run({ signal: ac.signal, geminiCalls: 0 }, next);
 });
 
 app.use('/api', core, projects, business, ai, integrations);

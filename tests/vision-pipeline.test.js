@@ -42,7 +42,9 @@ const jpeg = () => ({ mimetype: 'image/jpeg', buffer: Buffer.concat([Buffer.from
 before(async () => {
   mock = await startGeminiMock((_call, state) => {
     if (mode === 'crash') return { status: 500, error: 'backend exploded' };
-    if (mode === 'rate_limited') return { status: 429, error: 'Resource has been exhausted (e.g. check quota).' };
+    if (mode === 'rate_limited') return { status: 429, error: 'Resource has been exhausted (e.g. check quota).', retryDelay: '1s' };
+    if (mode === 'rate_limited_header') return { status: 429, error: 'Resource has been exhausted (e.g. check quota).', retryDelay: '30s', retryAfter: 1 };
+    if (mode === 'rate_limited_plain') return { status: 429, error: 'Resource has been exhausted (e.g. check quota).' };
     if (mode === 'always_invalid') return '{"objects": [ {"name": "broken"';
     if (mode === 'reject_config' && _call.raw.generationConfig?.responseJsonSchema) return { status: 400, error: "Invalid JSON payload received. Unknown name \"x\" at 'generation_config.response_json_schema'" };
     if (mode === 'always_400') return { status: 400, error: 'Request contains an invalid argument.' };
@@ -194,14 +196,34 @@ test('H — Gemini server error: clean, retryable error without internal details
   await assert.rejects(vision.analyseImages([jpeg()]), (e) => e.code === 'ai_unavailable_temp' && e.retryable === true && !/backend exploded/i.test(e.message));
 });
 
-test('H — rate limit (429): retryable "busy" error', async () => {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test('H — rate limit (429): one clean "busy" error with Google’s wait; no request at all until it is over', async () => {
   mode = 'rate_limited';
-  await assert.rejects(vision.analyseImages([jpeg()]), (e) => e.code === 'ai_rate_limited' && e.retryable === true);
+  mock.calls = [];
+  await assert.rejects(vision.analyseImages([jpeg()]), (e) => e.code === 'ai_rate_limited' && e.retryable === true && e.retryAfter === 1 && /busy/.test(e.message));
+  assert.equal(mock.calls.length, 1, 'no immediate retry (the SDK does not retry either)');
   assert.equal(client.aiStatus().state, 'rate_limited');
+  assert.ok(client.aiStatus().retryAt, 'when Gemini may be called again');
   mode = 'basic';
+  await assert.rejects(vision.analyseImages([jpeg()]), (e) => e.code === 'ai_rate_limited', 'still waiting');
+  assert.equal(mock.calls.length, 1, 'nothing was sent during the wait');
   assert.equal((await client.probeAI()).state, 'rate_limited', 'a metadata probe does not prove the quota is back');
+  await sleep(1100);
   await vision.analyseImages([jpeg()]);
-  assert.equal(client.aiStatus().state, 'ready', 'a successful generation clears it');
+  assert.equal(client.aiStatus().state, 'ready', 'after the wait, a successful generation clears it');
+});
+
+test('H — rate limit: a Retry-After header wins over the body; without either, wait 60 s', async () => {
+  mode = 'rate_limited_header';
+  await assert.rejects(vision.analyseImages([jpeg()]), (e) => e.retryAfter === 1);
+  await sleep(1100);
+  mode = 'rate_limited_plain';
+  await assert.rejects(vision.analyseImages([jpeg()]), (e) => e.retryAfter === 60 && /about 60 seconds/.test(e.message));
+  // The rest of this file should not wait 60 s.
+  client.clearRateLimit();
+  mode = 'basic';
+  await vision.analyseImages([jpeg()]);
 });
 
 test('H — model not available: generic user message, maintainer hint names the model, AI marked unavailable', async () => {

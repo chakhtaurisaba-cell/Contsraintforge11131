@@ -5,6 +5,7 @@ import { validate, rateLimit } from '../middleware.js';
 import { getProject, listProjects, projectEconomics, getSettings, allocationInputs, projectAllocation } from '../services/projects.js';
 import { generateIdeas, generatePlan } from '../services/ideation.js';
 import { ideaImage, ImageError } from '../ai/images.js';
+import { requestScope } from '../ai/client.js';
 import { researchCandidates, researchProduct } from '../services/research.js';
 import { toolCheck } from '../../shared/allocation.js';
 import { recommendChannels } from '../services/channels.js';
@@ -48,7 +49,22 @@ projects.post('/ideas', aiLimit, validate(IdeaRequest), async (req, res) => {
     run('INSERT INTO idea_runs (id, request, ideas, engine, created_at) VALUES (?,?,?,?,?)', runId, JSON.stringify({ ...result.request, pool: result.pool }), JSON.stringify(result.ideas), result.engine, now());
     return { ...result, runId };
   };
-  if (!String(req.headers.accept || '').includes('application/x-ndjson')) return res.json(finish(await generateIdeas(request, selected)));
+  // Only text ideas are produced here: pictures are requested by the browser afterwards
+  // (POST /ideas/image), build guides and web guides only when a card is opened.
+  const t0 = Date.now();
+  const scope = requestScope.getStore();
+  // The final line for every request — also when it ends with a rate limit or timeout.
+  const total = (outcome, err) => console.log(`[perf] total /api/ideas: ${Date.now() - t0} ms (${outcome}) · research: ${scope?.researchMs != null ? `${scope.researchMs} ms` : 'skipped'}${err?.retryAfter ? ` · retryAfter: ${err.retryAfter} s` : ''} · Gemini API calls: ${scope?.geminiCalls ?? '?'}`);
+  if (!String(req.headers.accept || '').includes('application/x-ndjson')) {
+    try {
+      const result = finish(await generateIdeas(request, selected));
+      total(result.status);
+      return res.json(result);
+    } catch (err) {
+      total(`error: ${err.code || 'unknown'}${err.stage ? ` in "${err.stage}"` : ''}`, err);
+      throw err;
+    }
+  }
 
   // Streaming mode: one JSON line per real pipeline event, then the result (or the error).
   res.setHeader('content-type', 'application/x-ndjson; charset=utf-8');
@@ -57,9 +73,12 @@ projects.post('/ideas', aiLimit, validate(IdeaRequest), async (req, res) => {
   try {
     const result = await generateIdeas(request, selected, { onProgress: (p) => send({ type: 'progress', ...p }) });
     send({ type: 'result', data: finish(result) });
+    total(result.status);
   } catch (err) {
     if (!err.status) console.error('[error]', err);
-    send({ type: 'error', error: err.status ? err.message : 'Something went wrong on the server.', code: err.code, retryable: Boolean(err.retryable), status: err.status || 500 });
+    total(`error: ${err.code || 'unknown'}${err.stage ? ` in "${err.stage}"` : ''}`, err);
+    // stage: which step ran out of time (e.g. "product ideas") — a diagnostic, never content or keys.
+    send({ type: 'error', error: err.status ? err.message : 'Something went wrong on the server.', code: err.code, retryable: Boolean(err.retryable), status: err.status || 500, ...(err.stage ? { stage: err.stage } : {}), ...(err.retryAfter ? { retryAfter: err.retryAfter } : {}) });
   }
   res.end();
 });

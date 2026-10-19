@@ -15,7 +15,7 @@ import { webSearch, fetchPage, searchAvailable, searchStatus } from './search.js
 import { extractJSON, conformToSchema, toGeminiSchema } from './json.js';
 
 const missingKey = !config.ai.apiKey;
-const status = { state: !config.ai.enabled ? 'unconfigured' : missingKey ? 'missing_key' : 'unchecked', checkedAt: null, detail: null, lastRejection: null, invalidArgument: null, requestAdjustments: [] };
+const status = { state: !config.ai.enabled ? 'unconfigured' : missingKey ? 'missing_key' : 'unchecked', checkedAt: null, detail: null, lastRejection: null, invalidArgument: null, requestAdjustments: [], lastTimeout: null };
 
 export const aiConfigured = () => config.ai.enabled && !missingKey;
 /** True when AI calls can be attempted (configured, and the key/model weren't rejected). */
@@ -49,11 +49,16 @@ export function aiStatus() {
     // Found by removing request features one at a time after a 400 (see generate()).
     invalidArgument: status.invalidArgument,
     requestAdjustments: status.requestAdjustments,
+    // The last Gemini call that ran out of time: which stage, after how long.
+    lastTimeout: status.lastTimeout,
+    // While rate-limited: when Gemini may be called again.
+    retryAt: status.state === 'rate_limited' && status.retryAt > Date.now() ? new Date(status.retryAt).toISOString() : null,
     maintainerHint: (typeof hint === 'function' ? hint() : hint) || (!search.available ? `Web research is off: ${search.missing ? `set ${search.missing}` : 'SEARCH_PROVIDER=off'}.` : null),
   };
 }
 
 function setState(state, detail = null) {
+  if (state !== 'rate_limited') status.retryAt = 0;
   if (status.state !== state) console.log(`[ai] status: ${state}${detail ? ` — ${detail}` : ''}`);
   status.state = state;
   status.detail = detail;
@@ -76,6 +81,48 @@ function notConfigured() {
 function ensureEnabled(what) {
   if (!aiConfigured()) throw notConfigured();
   if (!aiEnabled()) throw new AIError(`${what} is unavailable right now. Please try again later.`, 503, 'ai_unavailable');
+  // After a 429, wait as long as Google asked (or a minute) before sending anything again —
+  // retrying straight away only extends the rate limit.
+  const waitMs = (status.retryAt || 0) - Date.now();
+  if (status.state === 'rate_limited' && waitMs > 0) {
+    console.warn(`[ai] not calling Gemini: rate-limited for ${Math.ceil(waitMs / 1000)} more s`);
+    throw busyError(Math.ceil(waitMs / 1000));
+  }
+}
+
+/** Throws the "busy" error while Gemini's rate-limit wait is in force (call before doing any work). */
+export function checkRateLimit() {
+  const waitMs = (status.retryAt || 0) - Date.now();
+  if (status.state === 'rate_limited' && waitMs > 0) throw busyError(Math.ceil(waitMs / 1000));
+}
+
+/** Ends a rate-limit wait early (tests; or a maintainer who raised the quota). */
+export function clearRateLimit() {
+  status.retryAt = 0;
+}
+
+/** The one clean rate-limit answer: how long to wait, retryable. */
+function busyError(seconds) {
+  const wait = seconds >= 90 ? `about ${Math.round(seconds / 60)} minutes` : `about ${Math.max(5, seconds)} seconds`;
+  return Object.assign(new AIError(`The AI service is busy right now (Gemini rate limit). Please wait ${wait} and try again.`, 503, 'ai_rate_limited', true), { retryAfter: Math.max(1, seconds) });
+}
+
+/**
+ * How long Google wants us to wait after a 429: the Retry-After header, else the RetryInfo
+ * "retryDelay" in the error body, else 60 s.
+ */
+function retryAfterSeconds(msg) {
+  const header = lastRetryAfter;
+  lastRetryAfter = null;
+  if (header) {
+    const n = Number(header);
+    if (Number.isFinite(n) && n >= 0) return Math.ceil(n);
+    const date = Date.parse(header);
+    if (Number.isFinite(date)) return Math.max(1, Math.ceil((date - Date.now()) / 1000));
+  }
+  const delay = String(msg).match(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/);
+  if (delay) return Math.max(1, Math.ceil(Number(delay[1])));
+  return 60;
 }
 
 /**
@@ -87,8 +134,23 @@ export const requestScope = new AsyncLocalStorage();
 /* ------------------------------ Gemini calls ------------------------------ */
 
 let client = null;
+let lastRetryAfter = null;
+const GENERATION_URL = /:(generateContent|streamGenerateContent)\b|\/interactions\b/;
+/**
+ * The SDK's HTTP requests go through here: every generation request is counted on the current
+ * API request (requestScope → geminiCalls), and a 429's Retry-After header is kept for mapError.
+ * The SDK itself does not retry (no retryOptions are set).
+ */
+async function countingFetch(url, init) {
+  const store = requestScope.getStore();
+  if (store && GENERATION_URL.test(String(url))) store.geminiCalls = (store.geminiCalls || 0) + 1;
+  const res = await fetch(url, init);
+  if (res.status === 429) lastRetryAfter = res.headers.get('retry-after');
+  return res;
+}
+
 export function gemini() {
-  client ||= new GoogleGenAI({ apiKey: config.ai.apiKey, ...(config.ai.baseUrl ? { httpOptions: { baseUrl: config.ai.baseUrl } } : {}) });
+  client ||= new GoogleGenAI({ apiKey: config.ai.apiKey, httpOptions: { ...(config.ai.baseUrl ? { baseUrl: config.ai.baseUrl } : {}), fetch: countingFetch } });
   return client;
 }
 
@@ -168,8 +230,11 @@ function mapError(err, { timedOut, cancelled }) {
     return new AIError('The AI service isn’t available right now (it could not be authorised).', 503, 'ai_unauthorized');
   }
   if (code === 429 || /RESOURCE_EXHAUSTED|quota/i.test(msg)) {
+    const seconds = retryAfterSeconds(msg);
     setState('rate_limited', msg);
-    return new AIError('The AI service is busy right now. Please wait a minute and try again.', 503, 'ai_rate_limited', true);
+    status.retryAt = Date.now() + seconds * 1000;
+    console.error(`[ai] Gemini 429 rate limit — no further Gemini requests for ${seconds} s`);
+    return busyError(seconds);
   }
   if (code === 404) {
     setState('model_unavailable', msg);
@@ -185,14 +250,27 @@ function mapError(err, { timedOut, cancelled }) {
 }
 
 
+// What the user is told when a stage runs out of time.
+const STAGE_TEXT = [
+  [/parse/i, 'while reading your materials'],
+  [/idea/i, 'while designing products'],
+  [/plan/i, 'while writing the build guide'],
+  [/scan|photo/i, 'while looking at the photos'],
+];
+const stageText = (label) => STAGE_TEXT.find(([re]) => re.test(label))?.[1] || '';
+
+/** Time left before `deadline` (ms since epoch), capped at AI_TIMEOUT_MS. */
+const limitFor = (deadline) => Math.max(1000, Math.min(config.ai.timeoutMs, deadline ? deadline - Date.now() : Infinity));
+
 /** One request with a timeout and browser-disconnect cancellation. */
-async function generateOnce({ contents, cfg, label, onText }) {
+async function generateOnce({ contents, cfg, label, onText, deadline }) {
   const controller = new AbortController();
   const clientGone = requestScope.getStore()?.signal;
   let timedOut = false;
   const onGone = () => controller.abort();
   clientGone?.addEventListener('abort', onGone, { once: true });
-  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, config.ai.timeoutMs);
+  const limitMs = limitFor(deadline);
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, limitMs);
   const t0 = Date.now();
   try {
     const request = { model: config.ai.model, contents, config: { ...cfg, abortSignal: controller.signal } };
@@ -217,6 +295,14 @@ async function generateOnce({ contents, cfg, label, onText }) {
   } catch (err) {
     const mapped = mapError(err, { timedOut, cancelled: !timedOut && clientGone?.aborted });
     if (mapped.code === 'ai_bad_request') console.error(`[ai] ${label}: Gemini rejected the request (400). Sent: ${describeRequest(contents, cfg, Boolean(onText))}`);
+    if (mapped.code === 'ai_timeout') {
+      const afterMs = Date.now() - t0;
+      // Which stage ran out of time, after how long, and with what request — never content or keys.
+      console.error(`[perf] TIMEOUT in "${label}" after ${afterMs} ms (limit ${limitMs} ms) · ${describeRequest(contents, cfg, Boolean(onText))}`);
+      status.lastTimeout = { stage: label, afterMs, limitMs, at: new Date().toISOString() };
+      mapped.stage = label;
+      mapped.message = `The AI took too long to answer${stageText(label) ? ` ${stageText(label)}` : ''}. Please try again.`;
+    }
     throw mapped;
   } finally {
     clearTimeout(timer);
@@ -230,13 +316,13 @@ async function generateOnce({ contents, cfg, label, onText }) {
  * On 400 INVALID_ARGUMENT, optional features are removed one at a time until Gemini accepts the
  * request; the last one removed is reported as the invalid argument.
  */
-async function generate({ contents, cfg, label, onText }) {
+async function generate({ contents, cfg, label, onText, deadline }) {
   const off = new Set([...rejected].filter((f) => hasFeature(cfg, f)));
   const tried = [];
   for (;;) {
     const req = withoutFeatures(contents, cfg, off);
     try {
-      const out = await generateOnce({ ...req, label: tried.length ? `${label} (without ${[...off].join(', ')})` : label, onText });
+      const out = await generateOnce({ ...req, label: tried.length ? `${label} (without ${[...off].join(', ')})` : label, onText, deadline });
       if (tried.length) {
         const culprit = tried.at(-1);
         rejected.add(culprit);
@@ -310,7 +396,7 @@ function toParts(content) {
  * follows the schema; the reply is still parsed defensively, repaired for small slips and
  * validated. One retry with a correction when it doesn't validate (or was cut off).
  */
-export async function structured({ system, content, schema, effort = 'medium', maxTokens = 2000, label = 'structured', onProgress }) {
+export async function structured({ system, content, schema, effort = 'medium', maxTokens = 2000, label = 'structured', onProgress, deadline }) {
   ensureEnabled('AI analysis');
   const { raw, gemini: responseJsonSchema } = schemasFor(schema);
   const contents = [{ role: 'user', parts: toParts(content) }];
@@ -321,6 +407,7 @@ export async function structured({ system, content, schema, effort = 'medium', m
       cfg: { systemInstruction: system, responseMimeType: 'application/json', responseJsonSchema, maxOutputTokens: outputTokens, ...thinkingFor(effort) },
       label,
       onText: onProgress,
+      deadline,
     });
     if (res.blocked || res.finishReason === 'SAFETY' || res.finishReason === 'PROHIBITED_CONTENT') {
       throw new AIError('The AI declined this request. Try describing your materials differently.', 422, 'ai_blocked');
@@ -332,7 +419,12 @@ export async function structured({ system, content, schema, effort = 'medium', m
     const why = res.finishReason === 'MAX_TOKENS' ? 'the answer was cut off' : !res.text.trim() ? 'empty reply' : value == null ? 'no JSON found' : check.error.issues.slice(0, 3).map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
     console.warn(`[ai] ${label}: unusable output (attempt ${attempt}, ${why})`);
     if (res.finishReason === 'MAX_TOKENS') outputTokens = Math.round(outputTokens * 1.6);
-    // Retry once with an explicit correction.
+    // Retry once with an explicit correction — unless the request's time is nearly used up, in
+    // which case a second attempt would only end in a timeout.
+    if (attempt === 1 && deadline && deadline - Date.now() < 15000) {
+      console.warn(`[perf] ${label}: no time left for a retry (${Math.max(0, deadline - Date.now())} ms)`);
+      break;
+    }
     if (attempt === 1) contents.push({ role: 'user', parts: [{ text: `Your previous reply could not be used (${why}). Reply again with the complete JSON object that follows the response schema.` }] });
   }
   throw new AIError('The AI returned an unusable result. Please try again.', 502, 'ai_invalid_output', true);

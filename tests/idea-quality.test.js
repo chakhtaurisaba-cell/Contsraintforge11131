@@ -1,7 +1,7 @@
 // Idea quality cases A–F against a LOCAL MOCK of the Gemini API and a local stand-in for a search
 // server. The mock plays the model — including typical mistakes (cutting without a cutting tool,
 // drilling glass, renaming a jar as a vase, invented materials, repeats, vague steps); everything
-// after it is the real pipeline: research → two parallel idea calls → quality gate, grounding,
+// after it is the real pipeline: research → ONE structured idea call → quality gate, grounding,
 // feasibility, duplicate filtering, ranking → the one-item unlock fallback. This checks
 // ConstraintForge's logic, not Gemini's creativity (tests/live/gemini.test.js does that).
 import { test, before, after } from 'node:test';
@@ -35,7 +35,7 @@ const answer = (ideas, o = {}) => JSON.stringify({ ideas, enoughForStrongProject
 const parsed = (materials, tools = []) => JSON.stringify({ recognized: true, unrecognizedReason: '', materials: materials.map(([name, material, quantity = 0]) => ({ name, material, quantity, quantityStated: quantity > 0, unit: 'pcs', size: null })), tools, skills: [], budget: null, currency: null, hoursPerWeek: null });
 
 /* ------------------------- bottle + tape (cases A and B) ------------------------- */
-const B1 = [ // first designer (at most 6 = half of AI_MAX_IDEAS)
+const B1 = [ // the model's list is B1 + B2 in one answer (AI_MAX_IDEAS=12 here, so every bad idea reaches the gate)
   idea('Bottle rolling pin', [['plastic bottle'], ['tape', 1, 'grip']], { sourceRefs: [1, 99], steps: ['Fill the plastic bottle with cold water and screw the cap on tightly.', 'Wrap two turns of tape around the cap so it cannot open.', 'Roll dough with the bottle lying on its side.'] }),
   idea('Boot shaper', [['plastic bottle'], ['tape', 1, 'label']]),
   idea('Bottle cable reel', [['plastic bottle'], ['tape', 1, 'cable ends']]),
@@ -43,13 +43,13 @@ const B1 = [ // first designer (at most 6 = half of AI_MAX_IDEAS)
   idea('Bottle funnel', [['plastic bottle'], ['tape', 1, 'rim cover']], { steps: ['Hold the bottle on its side on the table.', 'Cut off the top third of the bottle just below the shoulder with scissors.', 'Tape over the cut rim so it is smooth.', 'Pour through the neck end to check it drains.'] }),
   idea('Bottle water container', [['plastic bottle']], { steps: ['Rinse the plastic bottle with clean water.', 'Fill the bottle with water and close the cap.'] }), // a renamed bottle
 ];
-const B2 = [ // second designer (other purposes)
+const B2 = [
   idea('Bottle pen organizer', [['plastic bottle'], ['tape', 1, 'rim cover']], { steps: B1[3].steps }), // the pencil holder again
   idea('Mystery gadget', [['plastic bottle'], ['tape']], { steps: ['Prepare the bottle.', 'Attach the tape.', 'Finish the organizer.'] }), // vague
   idea('Wooden bottle rack', [['pine board', 2], ['screws', 8]]), // materials the user never mentioned
   idea('Bottle scoop', [['plastic bottle'], ['tape', 1, 'handle grip']], { steps: ['Lay the bottle on its side with the handle up.', 'Cut away the bottom and one side below the handle in a curve.', 'Tape over all cut edges.', 'Scoop dry soil to check it holds.'] }),
   idea('Bird scarer', [['plastic bottle'], ['tape', 1, 'hanging loop']], { steps: ['Peel the label off the bottle so the plastic shines.', 'Make a 20 cm loop of tape, sticky sides together, and tape it to the cap.', 'Hang the bottle from a branch by the loop so it turns in the wind.'] }),
-  idea('Boot shaper', [['plastic bottle'], ['tape', 1, 'label']]), // proposed by both designers
+  idea('Boot shaper', [['plastic bottle'], ['tape', 1, 'label']]), // a repeat in the same list
 ];
 
 /* ------------------------- glass jar + shoelace (case C) ------------------------- */
@@ -135,17 +135,16 @@ before(async () => {
       return parsed([]);
     }
     if (!sys.startsWith('You are the product-ideation engine')) return '{}';
-    const second = /OTHER purposes/.test(user);
-    if (mode === 'bottle') return answer(second ? B2 : B1);
-    if (mode === 'jar-lace') return answer(second ? [] : JAR_LACE, { enoughForStrongProjects: false, unlock: { item: 'garden wire', why: 'Wire makes a rigid handle or a hanger that holds the jar safely.', estPrice: 2, ideas: [] } });
-    if (mode === 'jar-tape') return answer(second ? [] : JAR_TAPE, { enoughForStrongProjects: false, unlock: JAR_TAPE_UNLOCK });
-    if (mode === 'wood') return answer(second ? WOOD2 : WOOD);
-    if (mode === 'rich') return answer(second ? RICH2 : RICH1);
+    if (mode === 'bottle') return answer([...B1, ...B2]);
+    if (mode === 'jar-lace') return answer(JAR_LACE, { enoughForStrongProjects: false, unlock: { item: 'garden wire', why: 'Wire makes a rigid handle or a hanger that holds the jar safely.', estPrice: 2, ideas: [] } });
+    if (mode === 'jar-tape') return answer(JAR_TAPE, { enoughForStrongProjects: false, unlock: JAR_TAPE_UNLOCK });
+    if (mode === 'wood') return answer([...WOOD, ...WOOD2]);
+    if (mode === 'rich') return answer([...RICH1, ...RICH2]);
     if (mode === 'lace') return answer([idea('Shoelace keychain', [['shoelace']], { steps: ['Prepare the shoelace.', 'Finish the keychain.'] })], { enoughForStrongProjects: false, unlock: { item: 'a handful of wooden beads', why: 'Beads threaded on the lace make a bracelet, a zip pull or a lanyard.', estPrice: 2, ideas: [{ name: 'Beaded bracelet', summary: 'Beads knotted on the lace.', uses: ['shoelace', 'wooden beads'] }, { name: 'Beaded zip pull', summary: 'A short beaded loop for a zip.', uses: ['shoelace', 'wooden beads'] }] } });
     if (mode === 'lace-owned') return answer([], { enoughForStrongProjects: false, unlock: { item: 'shoelace', why: 'More laces.', estPrice: 0, ideas: [] } });
     return answer([]);
   });
-  useMock(mock, { SEARCH_PROVIDER: 'searxng', SEARXNG_URL: `http://127.0.0.1:${searx.address().port}` });
+  useMock(mock, { SEARCH_PROVIDER: 'searxng', SEARXNG_URL: `http://127.0.0.1:${searx.address().port}`, AI_MAX_IDEAS: '12' });
   ideation = await import('../server/services/ideation.js');
 });
 after(() => {
@@ -183,13 +182,14 @@ test('CASE A — 1 plastic bottle + tape, NO tools: no cutting at all, several d
   assert.match(reasonFor(r, 'Bottle water container'), /same object under a new name/);
   assert.match(reasonFor(r, 'Mystery gadget'), /vague/);
   assert.match(reasonFor(r, 'Wooden bottle rack'), /doesn’t use any of your materials/);
-  assert.equal(names(r).filter((n) => n === 'Boot shaper').length, 1, 'proposed by both designers, shown once');
+  assert.equal(names(r).filter((n) => n === 'Boot shaper').length, 1, 'repeated in the list, shown once');
   assert.equal(r.unlock, null, 'four strong projects → no purchase suggestion');
-  // Research reached the prompt as evidence; the two calls ran in parallel; only real sources become links.
+  // ONE idea call, with the research in its prompt; only real sources become links.
   const calls = ideaCalls();
-  assert.equal(calls.length, 2);
-  assert.ok(calls.every((c) => /\[1\] Plastic bottle rolling pin hack/.test(c.messages.at(-1).content)));
-  assert.ok(calls[1].receivedAt < calls[0].answeredAt && calls[0].receivedAt < calls[1].answeredAt, 'parallel');
+  assert.equal(calls.length, 1, 'one structured Gemini call for all the ideas');
+  assert.match(calls[0].messages.at(-1).content, /\[1\] Plastic bottle rolling pin hack/);
+  assert.equal(mock.calls.length, 1, 'the typed inventory is parsed on the server — the ideas call is the only Gemini call');
+  assert.equal(calls[0].raw.generationConfig.thinkingConfig?.thinkingLevel, 'LOW', 'low thinking: the strict checks are deterministic');
   assert.deepEqual(r.ideas.find((i) => i.name === 'Bottle rolling pin').inspiration, [{ url: SEARCH_RESULTS[0].url, title: SEARCH_RESULTS[0].title }], 'source 99 does not exist');
   assert.ok(/without extra materials/.test(r.research.queries.join(' | ')), 'with no tools, research looks for projects that need nothing else');
 });
