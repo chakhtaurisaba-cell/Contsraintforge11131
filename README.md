@@ -18,7 +18,7 @@ npm run dev                 # API on :8787 + web app on http://localhost:5173
 Production build: `npm run build && npm start`, which serves the app and the API on `:8787`.
 Tests: `npm test` (fast, no API key needed). `npm run test:live` sends real requests to Google Gemini through the running API (photo, scan, ideas, build plan, selling guide, assistant); it needs `GEMINI_API_KEY` and uses API quota.
 
-All AI runs on **Google Gemini** (`gemini-2.5-flash-lite` by default, via the official `@google/genai` SDK), called only from the server. If the key is missing or rejected, or Gemini is unavailable, AI features say so and offer a retry. They never show made-up results.
+All AI runs on **Google Gemini** (`gemini-3.5-flash-lite` by default, via the official `@google/genai` SDK), called only from the server. If the key is missing or rejected, or Gemini is unavailable, AI features say so and offer a retry. They never show made-up results.
 
 ## Site structure & themes
 
@@ -57,7 +57,7 @@ Example projects are loaded only on request, carry an **Example** badge, and use
 
 See `.env.example`.
 
-- **AI (Google Gemini):** set `GEMINI_API_KEY` in `.env` (create a key at https://aistudio.google.com/apikey). The text model is `gemini-2.5-flash-lite` (stable; chosen because the free-tier daily limit for `gemini-3.8-flash` was too low — your project's exact limits are in Google AI Studio), called with the official `@google/genai` SDK (`server/ai/client.js`). `GEMINI_MODEL` switches it (e.g. `gemini-3.5-flash-lite` or `gemini-3.8-flash`); the thinking setting is sent only to Gemini 3 models, since 2.x models reject it.
+- **AI (Google Gemini):** set `GEMINI_API_KEY` in `.env` (create a key at https://aistudio.google.com/apikey). The text model is `gemini-3.5-flash-lite` (stable Gemini 3 model; chosen because the free-tier daily limit for `gemini-3.8-flash` was too low and new projects have no access to 2.5 models — your project's exact limits are in Google AI Studio), called with the official `@google/genai` SDK (`server/ai/client.js`). `GEMINI_MODEL` switches it (e.g. `gemini-3.8-flash`); quick calls send `thinkingLevel: LOW` (supported by both), and no thinking setting is sent to older 2.x models, which reject it.
   - The key is read only from `GEMINI_API_KEY`, only on the server. It is never sent to the browser, never put in a `VITE_` variable, and never logged; health and Settings only say *where* it comes from.
   - On startup, and on each health check while it is down, the server checks the key and the model with a metadata call (no tokens used). The result is logged and shown in Settings → AI engine with what to fix (missing key, rejected key, rate limit, model unavailable).
   - Every structured call uses Gemini's structured output: `responseMimeType: application/json` plus the zod schema converted to the JSON Schema subset Gemini accepts (`toGeminiSchema` in `server/ai/json.js`). The reply is validated again with zod server-side; invalid output is retried once with the reason, and a second failure is reported as a retryable error — never replaced by made-up results. Totals and margins are never taken from model text.

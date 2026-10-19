@@ -1,4 +1,4 @@
-// LIVE tests against the real Google Gemini API (the configured text model, default gemini-2.5-flash-lite), using GEMINI_API_KEY from
+// LIVE tests against the real Google Gemini API (the configured text model, default gemini-3.5-flash-lite), using GEMINI_API_KEY from
 // the environment or .env. Nothing here is mocked: each test sends real requests to the real
 // model, through the client directly and through the real API server. They use API quota, so
 // they run separately: `npm run test:live`.
@@ -95,7 +95,7 @@ test('probe: the key is accepted and the configured model is available', () => {
   const s = client.aiStatus();
   assert.equal(s.available, true);
   assert.equal(s.provider, 'gemini');
-  assert.equal(s.model, process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash-lite');
+  assert.equal(s.model, process.env.GEMINI_MODEL?.trim() || 'gemini-3.5-flash-lite');
   assert.ok(!JSON.stringify(s).includes(process.env.GEMINI_API_KEY.trim()), 'the status never contains the key');
 });
 

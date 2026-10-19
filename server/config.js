@@ -18,10 +18,11 @@ export const config = {
     // Google Gemini through the official @google/genai SDK.
     provider: 'gemini',
     // The text/reasoning model: multimodal (text + images) with structured JSON output.
-    // gemini-2.5-flash-lite: stable (no shutdown date announced); chosen for its free-tier quota — the
+    // gemini-3.5-flash-lite: stable Gemini 3 model (thinking levels minimal–high, default minimal);
+    // chosen for its free-tier quota and availability to new projects — the
     // exact per-project limits are shown in Google AI Studio.
-    // GEMINI_MODEL switches it without a code change (e.g. gemini-3.5-flash-lite, gemini-3.8-flash).
-    model: (process.env.GEMINI_MODEL || '').trim() || 'gemini-2.5-flash-lite',
+    // GEMINI_MODEL switches it without a code change (e.g. gemini-3.8-flash).
+    model: (process.env.GEMINI_MODEL || '').trim() || 'gemini-3.5-flash-lite',
     // Server-side secret, read only from GEMINI_API_KEY. Never sent to the browser, never logged,
     // never put in a VITE_ variable (those are bundled into the frontend).
     apiKey: (process.env.GEMINI_API_KEY || '').trim(),

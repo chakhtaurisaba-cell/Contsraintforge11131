@@ -1,4 +1,4 @@
-// AI client for Google Gemini (official @google/genai SDK; text model from config.ai.model, default gemini-2.5-flash-lite).
+// AI client for Google Gemini (official @google/genai SDK; text model from config.ai.model, default gemini-3.5-flash-lite).
 //
 // Every structured call uses Gemini's JSON mode with a JSON schema (responseJsonSchema) and is
 // validated with zod on the server before anything reaches the UI or the database. Invalid
@@ -156,7 +156,7 @@ export function gemini() {
 
 // Thinking settings differ by generation: Gemini 3+ takes thinkingLevel (LOW is valid; MINIMAL is
 // rejected by gemini-3.8-flash). Gemini 2.x models use a thinking *budget* instead and reject
-// thinkingLevel; 2.5 Flash-Lite does not think by default, so nothing is sent to them.
+// thinkingLevel, so nothing is sent to them. gemini-3.5-flash-lite accepts minimal, low, medium and high.
 const usesThinkingLevel = () => /^gemini-([3-9]|\d{2,})(\.|-)/.test(config.ai.model);
 const thinkingFor = (effort) => (effort === 'low' && usesThinkingLevel() ? { thinkingConfig: { thinkingLevel: 'LOW' } } : {});
 
