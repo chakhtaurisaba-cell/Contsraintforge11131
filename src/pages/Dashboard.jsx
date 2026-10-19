@@ -7,7 +7,6 @@ import { useApp } from '../context/AppContext.jsx';
 import { api } from '../api/client.js';
 import { Page, Card, Button, Stat, ExampleBadge, StatusBadge, Progress, LoadingBlock, ErrorState, Stagger, StaggerItem, Banner, Empty } from '../components/ui.jsx';
 import { ProductPreview } from '../components/ProductPreview.jsx';
-import { assignPhotos } from '../components/productPhotos.js';
 import { TimelineChart } from '../components/Charts.jsx';
 import { money, num, pct, relTime } from '../utils/format.js';
 
@@ -98,7 +97,7 @@ export default function Dashboard() {
                 {data.projects.map((p, i) => (
                   <motion.div key={p.id} initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 * i }}>
                     <Link to={`/app/projects/${p.id}`} className="bench-item">
-                      <ProductPreview idea={p} photo={(data.projects.photos ||= assignPhotos(data.projects))[i]} caption={false} />
+                      <ProductPreview idea={p} project={p} caption={false} />
                       <div className="bench-name">{p.name}</div>
                       <div className="row" style={{ gap: 6 }}><StatusBadge status={p.status} />{p.isExample && <ExampleBadge />}</div>
                       <Progress value={p.progress} />

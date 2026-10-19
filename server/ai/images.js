@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto';
 import { config } from '../config.js';
 import { get, run, now } from '../db.js';
 import { aiConfigured, gemini } from './client.js';
+import { materialClass } from '../../shared/productKind.js';
 
 const TIMEOUT_MS = 60000;
 const MAX_PARALLEL = 3;
@@ -50,26 +51,70 @@ export function imageStatus() {
   };
 }
 
-/** Cache key: the same idea (by what it is and what it's made of) gets the same picture. */
+/** Cache key: the same idea (what it is, what it's made of, how it's built) gets the same picture. */
 export function imageKey(idea) {
   const materials = [...(idea.usesExisting || []).map((u) => u.inventoryName), ...(idea.missing || []).map((m) => m.name)].map((s) => String(s).toLowerCase().trim()).sort();
-  const basis = JSON.stringify([config.ai.images.model, String(idea.name || '').toLowerCase().trim(), idea.kind || idea.visualKind || '', String(idea.summary || '').toLowerCase().trim(), materials]);
+  const basis = JSON.stringify([config.ai.images.model, String(idea.name || '').toLowerCase().trim(), idea.kind || idea.visualKind || '', String(idea.summary || '').toLowerCase().trim(), String(idea.look || '').toLowerCase().trim(), (idea.steps || []).join('|').toLowerCase(), materials]);
   return createHash('sha256').update(basis).digest('hex').slice(0, 40);
 }
 
-/** The prompt: this exact product, made of exactly these materials, photographed plainly. */
-export function imagePrompt(idea) {
-  const parts = (idea.usesExisting || []).map((u) => `${u.inventoryName}${u.use ? ` (${u.use})` : ''}`);
-  const extra = (idea.missing || []).map((m) => m.name);
+// What each material class looks like, to forbid the ones the design doesn't use.
+const VISIBLE = {
+  wood: 'wood', fastener: 'screws, nails, bolts or brackets', metal: 'metal parts', thread: 'rope, cord, string or laces',
+  textile: 'fabric', electronics: 'wires, LEDs or electronics', glass: 'glass', plastic_bottle: 'plastic bottles',
+  plastic: 'other plastic parts', cardboard: 'cardboard', paper: 'paper', finish: 'paint or varnish', ceramic: 'ceramic', concrete: 'concrete',
+  wax: 'wax', wick: 'wicks',
+};
+
+/**
+ * The compact visual specification the picture is drawn from — built only from the card itself
+ * (its materials, quantities, look and steps), so the picture shows the same object as the card
+ * and its build guide.
+ */
+export function visualSpec(idea) {
+  const parts = [
+    ...(idea.usesExisting || []).map((u) => ({ name: u.inventoryName, qty: u.quantityUsed, unit: u.unit, use: u.use })),
+    ...(idea.missing || []).map((m) => ({ name: m.name, qty: m.quantity, unit: m.unit, use: m.why })),
+  ];
+  const classes = new Set(parts.map((p) => materialClass({ name: p.name })));
+  const names = parts.map((p) => p.name.toLowerCase()).join(' ');
+  const forbidden = Object.entries(VISIBLE).filter(([cls]) => !classes.has(cls)).map(([, label]) => label);
+  // Adhesives: only the one the design uses may show.
+  if (!/\btape\b/.test(names)) forbidden.push('tape');
+  if (!/\bglue\b/.test(names)) forbidden.push('glue blobs');
+  const steps = (idea.steps || []).map((s) => String(s).replace(/\s*\(use your [^)]*\)/, '')).slice(0, 6);
   const s = idea.size || {};
-  const size = s.length > 0 ? `About ${[s.length, s.width, s.height].filter((v) => v > 0).map((v) => Math.round(v / 10)).join(' × ')} cm.` : '';
+  const details = [
+    s.length > 0 && `about ${[s.length, s.width, s.height].filter((v) => v > 0).map((v) => Math.round(v / 10)).join(' × ')} cm`,
+    steps.some((x) => /\bcut/i.test(x)) && 'believable hand-cut edges',
+    /\btape\b/.test(names) && 'tape visibly applied by hand, slightly uneven',
+    classes.has('thread') && 'real knots and wraps where the cord is tied',
+    'small handmade imperfections',
+  ].filter(Boolean);
+  return {
+    projectName: idea.name,
+    visibleMaterials: parts.map((p) => `${p.qty ? `${p.qty} ${p.unit || ''} `.replace(/\s+/g, ' ') : ''}${p.name}${p.use ? ` (${p.use})` : ''}`.trim()),
+    finalShape: idea.look || idea.summary || '',
+    constructionMethod: steps.join(' ').slice(0, 600),
+    importantVisualDetails: details,
+    forbiddenMaterials: forbidden,
+  };
+}
+
+/** The prompt: one photorealistic, clearly handmade object, made of exactly the listed materials. */
+export function imagePrompt(idea) {
+  const v = visualSpec(idea);
   return [
-    `A realistic photograph of a finished, handmade ${idea.name}: ${idea.summary || ''}`.trim(),
-    `It is made only from: ${[...parts, ...extra].join(', ') || idea.primaryMaterial || 'the listed materials'} — the materials must be clearly recognisable, and no other materials (no paint, wood, metal or fabric unless listed).`,
-    size,
-    'Home-made quality, not a factory product. The whole object in view, three-quarter angle, on a plain light surface with soft natural light.',
-    'No text, no labels, no logos, no people, no hands.',
-  ].filter(Boolean).join(' ');
+    `Create a photorealistic image of the finished DIY object "${v.projectName}".`,
+    v.finalShape && `What it looks like: ${v.finalShape}`,
+    `It is realistically handmade from exactly these materials, and nothing else: ${v.visibleMaterials.join('; ') || 'the listed materials'}.`,
+    v.constructionMethod && `How it was built (the picture must match this construction): ${v.constructionMethod}`,
+    `Visible details: ${v.importantVisualDetails.join('; ')}.`,
+    v.forbiddenMaterials.length && `Do not show any ${v.forbiddenMaterials.join(', ')} — none of these are part of it.`,
+    'Do not introduce additional visible construction materials. Do not make it look factory manufactured, store-bought, acrylic, ceramic or professionally finished. Use believable imperfections and realistic DIY assembly.',
+    'Show one clear finished object, whole and in focus, on a neutral realistic tabletop or workbench with soft natural light.',
+    'No text, logos, captions, diagrams, labels, people or hands.',
+  ].filter(Boolean).join('\n');
 }
 
 let running = 0;
@@ -110,6 +155,19 @@ export async function ideaImage(idea) {
   if (usedToday() >= config.ai.images.dailyLimit) throw new ImageError('daily_limit');
 
   return slot(async () => {
+    // One retry for a transient failure (timeout, empty answer); never for billing, rate limits or a missing model.
+    try {
+      return await generateOnce(idea, key);
+    } catch (err) {
+      if (!['timeout', 'error'].includes(err.code)) throw err;
+      console.warn(`[ai] picture for "${idea.name}": retrying once`);
+      return generateOnce(idea, key);
+    }
+  });
+}
+
+async function generateOnce(idea, key) {
+  {
     const t0 = Date.now();
     try {
       const res = await gemini().interactions.create(
@@ -135,5 +193,5 @@ export async function ideaImage(idea) {
       if (kind === 'rate_limited') Object.assign(status, { state: kind, until: Date.now() + 60 * 1000 });
       throw new ImageError(kind, reasonText(kind) || (kind === 'timeout' ? 'The picture took too long to generate.' : 'The picture could not be generated.'));
     }
-  });
+  }
 }

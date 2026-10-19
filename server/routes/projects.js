@@ -85,14 +85,37 @@ const ImageRequest = z.object({
     kind: z.string().max(40).optional(),
     visualKind: z.string().max(40).optional(),
     primaryMaterial: z.string().max(160).optional(),
-    usesExisting: z.array(z.object({ inventoryName: z.string().max(160), use: z.string().max(160).optional() }).passthrough()).max(30).optional(),
-    missing: z.array(z.object({ name: z.string().max(160) }).passthrough()).max(30).optional(),
+    look: z.string().max(600).optional(),
+    steps: z.array(z.string().max(600)).max(16).optional(),
+    usesExisting: z.array(z.object({ inventoryName: z.string().max(160), use: z.string().max(160).optional(), quantityUsed: z.number().optional(), unit: z.string().max(30).optional() })).max(30).optional(),
+    missing: z.array(z.object({ name: z.string().max(160), quantity: z.number().optional(), unit: z.string().max(30).optional(), why: z.string().max(300).optional() })).max(30).optional(),
     size: z.object({ length: z.number().optional(), width: z.number().optional(), height: z.number().optional() }).partial().optional(),
   }),
 });
 projects.post('/ideas/image', imageLimit, validate(ImageRequest), async (req, res) => {
   try {
     res.json(await ideaImage(req.body.idea));
+  } catch (err) {
+    if (!(err instanceof ImageError)) throw err;
+    res.status(503).json({ error: err.message, code: `images_${err.code}`, retryable: ['rate_limited', 'timeout', 'error'].includes(err.code) });
+  }
+});
+
+/**
+ * The picture of a saved project (older projects, or ones saved before their card's picture was
+ * ready). Generated from the project's own idea and stored with it. Example projects keep none:
+ * they are simulated demo data and not worth paying for.
+ */
+projects.post('/projects/:id/image', imageLimit, async (req, res) => {
+  const row = get('SELECT id, name, idea, is_example FROM projects WHERE id = ?', req.params.id);
+  if (!row) return res.status(404).json({ error: 'Project not found' });
+  const idea = parseJSON(row.idea, null) || { name: row.name };
+  if (idea.image?.src) return res.json({ ...idea.image, cached: true });
+  if (row.is_example) return res.status(503).json({ error: 'Example projects have no generated picture.', code: 'images_example', retryable: false });
+  try {
+    const img = await ideaImage({ ...idea, name: idea.name || row.name });
+    run('UPDATE projects SET idea = ?, updated_at = ? WHERE id = ?', JSON.stringify({ ...idea, image: { src: img.src, model: img.model } }), now(), row.id);
+    res.json(img);
   } catch (err) {
     if (!(err instanceof ImageError)) throw err;
     res.status(503).json({ error: err.message, code: `images_${err.code}`, retryable: ['rate_limited', 'timeout', 'error'].includes(err.code) });

@@ -254,8 +254,8 @@ test('feasibility — a fabric pouch without sewing tools says so; wood without 
 test('tools — tools the model names that don’t fit the materials are ignored; key parts it forgot are added', async () => {
   const bottles = { id: 'pb', name: 'plastic bottles', material: 'plastic', quantity: 20, unit: 'pcs' };
   extraIdeas = [
-    idea({ name: 'Bottle pen holder', primaryMaterial: 'plastic bottles', usesExisting: [{ inventoryName: 'plastic bottles', quantityUsed: 1, unit: 'pcs', use: 'body' }], toolsRequired: ['Screwdriver', 'Tape gun', 'Scissors'], visualKind: 'bottle_organizer' }),
-    idea({ name: 'Zipped bottle case', primaryMaterial: 'plastic bottles', usesExisting: [{ inventoryName: 'plastic bottles', quantityUsed: 2, unit: 'pcs', use: 'shell' }], toolsRequired: [], visualKind: 'pouch' }),
+    idea({ name: 'Bottle pen holder', primaryMaterial: 'plastic bottles', usesExisting: [{ inventoryName: 'plastic bottles', quantityUsed: 1, unit: 'pcs', use: 'body' }], toolsRequired: ['Screwdriver', 'Tape gun', 'Scissors'], steps: ['Cut the plastic bottle 10 cm from the bottom with the scissors.', 'Tape over the cut edge so it is smooth.', 'Stand pens in the bottom half.'], visualKind: 'bottle_organizer' }),
+    idea({ name: 'Zipped bottle case', primaryMaterial: 'plastic bottles', usesExisting: [{ inventoryName: 'plastic bottles', quantityUsed: 2, unit: 'pcs', use: 'shell' }], toolsRequired: [], steps: ['Cut the plastic bottle 10 cm from the bottom with the scissors.', 'Tape over the cut edge so it is smooth.', 'Stand pens in the bottom half.'], visualKind: 'pouch' }),
   ];
   const r = await ideation.generateIdeas({ quantity: 1, tools: ['Scissors'], currency: 'GEL' }, [bottles]);
   extraIdeas = [];
@@ -288,10 +288,10 @@ test('supplies — glue the model lists as "to buy" but the user owns is covered
 });
 
 test('feasibility — joining depends on the material; weight-bearing names need structural material', async () => {
-  const card = { id: 'cb', name: 'cardboard boxes', material: 'cardboard', quantity: 5, unit: 'pcs' };
+  const card = { id: 'cb', name: 'cardboard sheets', material: 'cardboard', quantity: 5, unit: 'pcs' };
   const bottles = { id: 'pb', name: 'plastic bottles', material: 'plastic', quantity: 20, unit: 'pcs' };
   extraIdeas = [
-    idea({ name: 'Cardboard storage box', primaryMaterial: 'cardboard boxes', usesExisting: [{ inventoryName: 'cardboard boxes', quantityUsed: 1, unit: 'pcs', use: 'walls' }], visualKind: 'box' }),
+    idea({ name: 'Cardboard storage box', primaryMaterial: 'cardboard sheets', usesExisting: [{ inventoryName: 'cardboard sheets', quantityUsed: 1, unit: 'pcs', use: 'walls' }], steps: ['Mark a 30 × 20 cm base and four 10 cm walls on one cardboard sheet.', 'Cut along the outline with the scissors.', 'Fold the walls up along the base edges.'], visualKind: 'box' }),
     idea({ name: 'Bottle ladder', primaryMaterial: 'plastic bottles', usesExisting: [{ inventoryName: 'plastic bottles', quantityUsed: 10, unit: 'pcs', use: 'rungs' }], visualKind: 'vase' }),
   ];
   const r = await ideation.generateIdeas({ quantity: 1, tools: ['Scissors'], currency: 'GEL' }, [card, bottles]);

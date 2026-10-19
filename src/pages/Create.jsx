@@ -9,7 +9,6 @@ import { useApp } from '../context/AppContext.jsx';
 import { api } from '../api/client.js';
 import { Page, Card, Button, Badge, Field, NumberInput, Modal, Banner, Empty, Stagger, StaggerItem } from '../components/ui.jsx';
 import { ProductPreview } from '../components/ProductPreview.jsx';
-import { assignPhotos } from '../components/productPhotos.js';
 import { InventoryItemForm, dimsSummary } from '../components/InventoryEditor.jsx';
 import { STATUS } from '../../shared/allocation.js';
 import { money } from '../utils/format.js';
@@ -124,38 +123,13 @@ function UsesYour({ idea }) {
   );
 }
 
-/** Asks for the card's own picture once the card is (nearly) on screen — nothing is generated for unseen cards. */
-function useWhenVisible(onVisible) {
-  const ref = useRef(null);
-  const cb = useRef(onVisible);
-  cb.current = onVisible;
-  useEffect(() => {
-    const el = ref.current;
-    if (!el || !cb.current) return undefined;
-    if (typeof IntersectionObserver === 'undefined') {
-      cb.current();
-      return undefined;
-    }
-    const io = new IntersectionObserver((entries) => {
-      if (entries.some((e) => e.isIntersecting)) {
-        io.disconnect();
-        cb.current?.();
-      }
-    }, { rootMargin: '200px' });
-    io.observe(el);
-    return () => io.disconnect();
-  }, []);
-  return ref;
-}
-
-function IdeaCard({ idea, photo, image, onVisible, selected, onCompare, onDetails, onSave, onDevelop, busy }) {
+function IdeaCard({ idea, image, selected, onCompare, onDetails, onSave, onDevelop, busy }) {
   const meta = [DIFFICULTY[idea.difficulty], idea.estProductionMinutes > 0 && `~${idea.estProductionMinutes} min each`].filter(Boolean);
-  const ref = useWhenVisible(onVisible);
   return (
-    <motion.article layout className={`idea-card ${selected ? 'selected' : ''}`} ref={ref}>
+    <motion.article layout className={`idea-card ${selected ? 'selected' : ''}`}>
       <div className="idea-card-media">
         <button type="button" onClick={onDetails} aria-label={`Details for ${idea.name}`}>
-          <ProductPreview idea={idea} photo={photo} image={image?.src ? image : null} imageLoading={image?.loading} />
+          <ProductPreview idea={idea} image={image?.src ? image : null} imageLoading={image?.loading} />
         </button>
         <label className="idea-compare" title="Compare up to 3 ideas"><input type="checkbox" checked={selected} onChange={onCompare} />Compare</label>
       </div>
@@ -193,14 +167,14 @@ function ResearchBlock({ idea, state, onResearch }) {
 }
 
 /** Everything about one idea, in one calm place — the card stays short. */
-function IdeaDetails({ idea, photo, image, onClose, onSave, onDevelop, busy, researchState, onResearch }) {
+function IdeaDetails({ idea, image, onClose, onSave, onDevelop, busy, researchState, onResearch }) {
   const cur = idea.currency;
   const materials = (idea.materials || []).filter((m) => m.status !== 'optional_upgrade');
   return (
     <Modal open onClose={onClose} title={idea.name} wide>
       <div className="idea-details">
         <div className="stack" style={{ gap: 10 }}>
-          <ProductPreview idea={idea} photo={photo} image={image?.src ? image : null} imageLoading={image?.loading} />
+          <ProductPreview idea={idea} image={image?.src ? image : null} imageLoading={image?.loading} />
           <p className="text-2">{idea.summary || idea.tagline}</p>
           <Verdict idea={idea} />
           <div className="xs muted">{[DIFFICULTY[idea.difficulty], idea.estProductionMinutes > 0 && `~${idea.estProductionMinutes} min per unit`, idea.priceLow > 0 && `sells for ~${money(idea.priceLow, cur)}–${money(idea.priceHigh, cur)}`].filter(Boolean).join(' · ')} <span className="muted">(estimates)</span></div>
@@ -295,6 +269,10 @@ function UnlockPanel({ unlock, onAdd, alone }) {
                 <li key={i.id || i.name}>
                   <div className="small strong">{i.name}</div>
                   <div className="xs muted">{i.summary}</div>
+                  {(() => {
+                    const uses = i.uses?.length ? i.uses : [...(i.usesExisting || []).map((u) => u.inventoryName), ...(i.missing || []).map((m) => m.name)];
+                    return uses.length ? <div className="xs" style={{ marginTop: 4 }}><span className="muted">Uses: </span>{uses.join(', ')}</div> : null;
+                  })()}
                 </li>
               ))}
             </ul>
@@ -335,9 +313,9 @@ export default function Create() {
     const q = imageQueue.current;
     if (!imagesAvailable || q.off || q.requested.has(idea.id)) return;
     q.requested.add(idea.id);
+    setImages((m) => ({ ...m, [idea.id]: { loading: true } }));
     const runOne = async () => {
       q.active += 1;
-      setImages((m) => ({ ...m, [idea.id]: { loading: true } }));
       try {
         const body = {
           name: idea.name,
@@ -345,8 +323,10 @@ export default function Create() {
           kind: idea.kind,
           visualKind: idea.visualKind,
           primaryMaterial: idea.primaryMaterial,
-          usesExisting: (idea.usesExisting || []).map((u) => ({ inventoryName: u.inventoryName, use: u.use || '' })),
-          missing: (idea.missing || []).map((m) => ({ name: m.name })),
+          look: idea.look || '',
+          steps: (idea.steps || []).slice(0, 16),
+          usesExisting: (idea.usesExisting || []).map((u) => ({ inventoryName: u.inventoryName, use: u.use || '', quantityUsed: Number(u.quantityUsed) || undefined, unit: u.unit })),
+          missing: (idea.missing || []).map((m) => ({ name: m.name, quantity: Number(m.quantity) || undefined, unit: m.unit })),
           size: idea.size,
         };
         const r = await api.post('/ideas/image', { idea: body });
@@ -357,15 +337,23 @@ export default function Create() {
         if (/^images_(needs_billing|model_unavailable|off|daily_limit|unconfigured)$/.test(err.code || '')) {
           q.off = true;
           setImagesNote(err.message);
+          // Cards still waiting show the neutral "no picture" state instead of a skeleton.
+          setImages((m) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, v.loading ? { error: err.message } : v])));
+          q.waiting.length = 0;
         }
       } finally {
         q.active -= 1;
         q.waiting.shift()?.();
       }
     };
-    if (q.active < 2) runOne();
+    if (q.active < 3) runOne();
     else q.waiting.push(runOne);
   }, [imagesAvailable]);
+
+  // As soon as the cards are shown, every one of them gets its own picture (best first).
+  useEffect(() => {
+    if (result?.status === 'ok') result.ideas.forEach((idea) => requestImage(idea));
+  }, [result, requestImage]);
 
   const items = inv.data || [];
   const selected = selectedInv ?? items.map((i) => i.id);
@@ -436,8 +424,6 @@ export default function Create() {
     });
   }
 
-  // Each example photo at most once per result list.
-  const photos = useMemo(() => assignPhotos(result?.ideas || []), [result]);
   const comparing = useMemo(() => (result?.ideas || []).filter((i) => compare.includes(i.id)), [result, compare]);
   const details = result?.ideas?.find((i) => i.id === detailsId) || null;
 
@@ -551,9 +537,7 @@ export default function Create() {
                 <StaggerItem key={idea.id} style={{ display: 'flex' }}>
                   <IdeaCard
                     idea={idea}
-                    photo={photos[result.ideas.indexOf(idea)]}
                     image={images[idea.id]}
-                    onVisible={() => requestImage(idea)}
                     busy={busy}
                     selected={compare.includes(idea.id)}
                     onCompare={() => setCompare((c) => (c.includes(idea.id) ? c.filter((x) => x !== idea.id) : [...c, idea.id].slice(-3)))}
@@ -572,7 +556,6 @@ export default function Create() {
       {details && (
         <IdeaDetails
           idea={details}
-          photo={photos[result.ideas.indexOf(details)]}
           image={images[details.id]}
           busy={busy}
           researchState={researchState}

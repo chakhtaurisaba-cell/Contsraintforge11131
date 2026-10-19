@@ -98,6 +98,7 @@ export const ProductIdea = z.object({
     note: str.describe('one short selling suggestion if realistic (where/how), otherwise why not'),
   }),
   sourceRefs: z.array(num).describe('numbers of the research results that inspired or confirm this idea; [] when it is your own'),
+  look: str.describe('one sentence: what the finished object really looks like — shape, which materials are visible where, visible cuts, wraps, knots or joints; must match the steps'),
   visualKind: z.enum(VISUAL_KINDS).describe('the closest picture of the finished product'),
 });
 
@@ -107,7 +108,7 @@ export const UnlockSuggestion = z.object({
   item: str.describe('ONE material or tool to add, e.g. "a ball of twine"; empty string when the inventory already makes enough strong projects'),
   why: str.describe('why this single item unlocks useful projects with what they already have'),
   estPrice: num.describe('rough price of that one item in the requested currency, 0 if unknown'),
-  ideas: z.array(z.object({ name: str, summary: str })).describe('2–4 useful projects that become possible with that one item plus the current inventory'),
+  ideas: z.array(z.object({ name: str, summary: str, uses: z.array(str).describe('the materials it uses: the new item plus owned ones') })).describe('2–4 useful projects that become possible with that one item plus the current inventory'),
 });
 
 export const IdeaResult = z.object({

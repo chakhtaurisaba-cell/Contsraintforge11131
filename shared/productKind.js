@@ -79,7 +79,7 @@ const MATERIAL_CLASSES = [
   ['cardboard', /\b(cardboard|cartons?|corrugated|card ?stock)\b/],
   ['paper', /\b(paper|kraft|newspaper|magazines?)\b/],
   ['textile', /\b(fabric|cotton|canvas|denim|linen|felt|cloth|textile|wool|jeans|t-?shirts?|scraps?|leather)\b/],
-  ['thread', /\b(thread|yarn|twine|string|rope|cord)\b/],
+  ['thread', /\b(thread|yarn|twine|string|rope|cords?|shoe ?laces?|laces?)\b/],
   ['fastener', /\b(screws?|nails?|bolts?|nuts?|brackets?|hinges?|hooks?|staples?|rivets?|dowels?)\b/],
   ['adhesive', /\b(glue|pva|epoxy|tape|adhesive|hot glue|silicone)\b/],
   ['concrete', /\b(concrete|cement|plaster)\b/],

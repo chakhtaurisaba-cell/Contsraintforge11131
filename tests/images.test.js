@@ -36,12 +36,47 @@ test('a picture of THIS idea: official Interactions request, the idea’s own ma
   const body = mock.imageCalls[0];
   assert.equal(body.model, 'gemini-nano-banana-2.1');
   assert.deepEqual(body.response_format, { type: 'image', mime_type: 'image/jpeg', aspect_ratio: '4:3', image_size: '1K' });
-  assert.match(body.input, /Pine wall shelf/);
-  assert.match(body.input, /pine boards \(shelf and brackets\), wood glue \(joints\)/);
-  assert.match(body.input, /About 60 × 15 × 15 cm/);
-  assert.match(body.input, /No text/);
+  assert.match(body.input, /^Create a photorealistic image of the finished DIY object "Pine wall shelf"/);
+  assert.match(body.input, /exactly these materials, and nothing else: pine boards \(shelf and brackets\); wood glue \(joints\)/);
+  assert.match(body.input, /about 60 × 15 × 15 cm/);
+  assert.match(body.input, /Do not show any [^\n]*screws, nails, bolts or brackets[^\n]*tape/, 'materials the shelf does not use are forbidden');
+  assert.ok(!/Do not show any [^\n]*\bwood,/.test(body.input), 'its own material is not forbidden');
+  assert.match(body.input, /Do not make it look factory manufactured/);
+  assert.match(body.input, /No text, logos, captions, diagrams, labels/);
   assert.equal(mock.lastKey, MOCK_KEY);
   assert.ok(!JSON.stringify(body).includes(MOCK_KEY), 'the key is never in the body');
+});
+
+test('visual spec from the card itself: bottle + tape only → wood, screws, rope, glue, electronics and fabric are forbidden; look and steps are used', () => {
+  const bottle = {
+    name: 'Plastic bottle desk organizer',
+    summary: 'A pen cup cut from a bottle, its rim covered with tape.',
+    look: 'The bottom 10 cm of a clear bottle, its cut rim wrapped in a band of tape.',
+    usesExisting: [{ inventoryName: 'plastic bottle', quantityUsed: 1, unit: 'pcs', use: 'organizer body' }, { inventoryName: 'tape', quantityUsed: 1, unit: 'roll', use: 'rim cover' }],
+    steps: ['Place the bottle upright on a flat table.', 'Cut around the bottle 10 cm from the bottom (use your scissors).', 'Fold tape over the cut edge, half inside and half outside.'],
+  };
+  const v = images.visualSpec(bottle);
+  assert.equal(v.projectName, 'Plastic bottle desk organizer');
+  assert.deepEqual(v.visibleMaterials, ['1 pcs plastic bottle (organizer body)', '1 roll tape (rim cover)']);
+  assert.equal(v.finalShape, bottle.look);
+  assert.match(v.constructionMethod, /Cut around the bottle 10 cm from the bottom\./, 'the "(use your scissors)" note is not drawn');
+  for (const f of ['wood', 'screws, nails, bolts or brackets', 'metal parts', 'rope, cord, string or laces', 'glue blobs', 'wires, LEDs or electronics', 'fabric']) assert.ok(v.forbiddenMaterials.includes(f), f);
+  assert.ok(!v.forbiddenMaterials.includes('tape') && !v.forbiddenMaterials.includes('plastic bottles'));
+  assert.ok(v.importantVisualDetails.includes('believable hand-cut edges'));
+  const prompt = images.imagePrompt(bottle);
+  assert.match(prompt, /The bottom 10 cm of a clear bottle/);
+  assert.match(prompt, /the picture must match this construction/);
+  assert.notEqual(images.imageKey(bottle), images.imageKey({ ...bottle, steps: ['Wrap tape around the whole bottle.', 'Stand it on the desk.'] }), 'a different build is a different picture');
+});
+
+test('a transient failure is retried once; the second answer is used', async () => {
+  let n = 0;
+  mock.onImage = () => (++n === 1 ? { status: 500, error: 'Internal error' } : null);
+  mock.imageCalls = [];
+  const r = await images.ideaImage({ ...shelf, name: 'Pine shoe rack', summary: 'A low rack for shoes.' });
+  assert.equal(mock.imageCalls.length, 2);
+  assert.match(r.src, /^data:image\/jpeg;base64,/);
+  mock.onImage = () => null;
 });
 
 test('the same idea is never generated (or paid for) twice; a different idea gets its own picture', async () => {

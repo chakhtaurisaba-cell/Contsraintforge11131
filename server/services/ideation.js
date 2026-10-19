@@ -23,6 +23,8 @@ import { config } from '../config.js';
 import { checkFeasibility, relevantModelTools, isSupply } from './feasibility.js';
 import { researchProduct } from './research.js';
 import { researchIdeas, evidenceForPrompt } from './ideaResearch.js';
+import { concreteSteps, checkSteps, checkProduct, safetyNoteFor, vaguePlanSteps, toolsNotOwned } from './qualityGate.js';
+import { materialClass } from '../../shared/productKind.js';
 
 // Fewer buildable ideas than this → the one-item "unlock" suggestion is shown.
 const MIN_STRONG = 3;
@@ -104,7 +106,9 @@ function groundIdea(idea, pool, testBatch, request) {
 
   const userTools = request.userTools || [];
   // Tools: cutting/sewing needs from the rules, plus only those model-named tools that fit the materials used.
-  const toolsMissing = [...new Set([...toolCheck(relevantModelTools(idea.toolsRequired, owned, idea.steps), userTools, pool).filter((t) => !t.have).map((t) => t.name), ...feas.addTools])];
+  // Tools: the model's (where they fit), the material rules' (cutting/sewing), and every tool the build steps use.
+  // The tool the steps actually use comes first ("Scissors" rather than the generic "Craft knife or scissors").
+  const toolsMissing = mergeTools([...(idea.stepToolsMissing || []), ...toolCheck(relevantModelTools(idea.toolsRequired, owned, idea.steps), userTools, pool).filter((t) => !t.have).map((t) => t.name), ...feas.addTools]);
   // An unknown amount of glue, sandpaper or thread doesn't block a build; other unknown amounts do.
   // (Judged by the stock item that actually covers the line, whichever list the model put it in.)
   const coveredBySupply = (l) => l.sources.some((src) => src.itemId && isSupply(pool.find((p) => p.id === src.itemId) || {}));
@@ -238,11 +242,14 @@ export function isNearDuplicate(a, b) {
 
 /* ----------------------------- instructions ----------------------------- */
 
-const VAGUE_STEP = /^(now\s+)?(assemble|construct|build|make|create|put together|finish|complete)\s+(the\s+|your\s+|all\s+)?(product|project|item|materials?|pieces?|parts?|it|everything|design)(\s+together)?\s*\.?$/i;
-/** Removes steps that say nothing ("Assemble the materials."); returns the remaining steps. */
-export function concreteSteps(steps = []) {
-  return steps.map((s) => String(s).trim()).filter((s) => s && !VAGUE_STEP.test(s) && s.split(/\s+/).length >= 3);
-}
+// Vague-step filtering, tool and safety checks live in the quality gate.
+export { concreteSteps };
+
+// Two names for one missing tool ("Craft knife or scissors" from the material rules, "Scissors"
+// from the steps) are listed once.
+const TOOL_FAMILY = [/scissor|knife|cutter|blade/i, /saw/i, /drill|driver|screwdriver/i, /needle|sew/i];
+const sameTool = (a, b) => a.toLowerCase() === b.toLowerCase() || TOOL_FAMILY.some((re) => re.test(a) && re.test(b));
+const mergeTools = (list) => list.reduce((out, t) => (out.some((x) => sameTool(x, t)) ? out : [...out, t]), []);
 
 /* ----------------------------- one-item unlock ----------------------------- */
 
@@ -466,7 +473,7 @@ const PLAN_SCHEMA = BuildPlan.extend({
   tolerances: BuildPlan.shape.tolerances.max(3),
   safety: BuildPlan.shape.safety.max(4),
   finalInspection: BuildPlan.shape.finalInspection.max(5),
-  steps: z.array(Step.extend({ commonMistakes: Step.shape.commonMistakes.max(2), measurements: Step.shape.measurements.max(4) })).min(1).max(8),
+  steps: z.array(Step.extend({ commonMistakes: Step.shape.commonMistakes.max(2), measurements: Step.shape.measurements.max(4) })).min(1).max(14), // one physical action per step
 });
 
 async function aiPlan(project, inventory, currency, research) {
@@ -474,8 +481,18 @@ async function aiPlan(project, inventory, currency, research) {
   // double the prompt for nothing.
   const i = project.idea || {};
   const idea = compact({ name: i.name || project.name, summary: i.summary || i.description, size: i.size, usesExisting: i.usesExisting, missing: i.missing, substitutions: i.substitutions, toolsRequired: i.toolsRequired, difficulty: i.difficulty, dependsOnMeasurements: i.dependsOnMeasurements, safetyNote: i.safetyNote });
-  const content = `Selected product idea (JSON):\n${JSON.stringify(idea)}\n\nConfirmed inventory (JSON):\n${JSON.stringify(inventoryForPrompt(inventory).map(compact))}\n\nTools the user owns: ${JSON.stringify(project.idea?.userTools || [])}\nCurrency for prices: ${currency}.\n\n${researchForPrompt(research)}\n\nProduce the complete build plan for ONE unit, adapted to this inventory.`;
-  const plan = await structured({ system: SYSTEM_PLAN, content, schema: PLAN_SCHEMA, effort: 'high', maxTokens: 4000, label: 'build plan' });
+  // The card the user chose: the guide builds exactly this object (same materials, construction and
+  // look as the card and its picture), with exactly the user's tools.
+  const design = compact({ look: i.look, whyFeasible: i.whyFeasible, steps: i.steps });
+  const tools = project.idea?.userTools || [];
+  const content = `Selected product idea (JSON):\n${JSON.stringify(idea)}\n\nThe chosen card's design — build EXACTLY this object, with the same materials, construction and look (expand these steps into a full beginner guide; do not switch to a different design):\n${JSON.stringify(design)}\n\nConfirmed inventory (JSON):\n${JSON.stringify(inventoryForPrompt(inventory).map(compact))}\n\nTools the user owns — the COMPLETE list; no other tool may appear in any step: ${tools.length ? JSON.stringify(tools) : 'none (no cutting, drilling or sawing is possible)'}\nCurrency for prices: ${currency}.\n\n${researchForPrompt(research)}\n\nProduce the complete build plan for ONE unit, adapted to this inventory.`;
+  let plan = await structured({ system: SYSTEM_PLAN, content, schema: PLAN_SCHEMA, effort: 'high', maxTokens: 5000, label: 'build plan' });
+  // A guide a beginner can't follow is asked for once more, naming the vague steps.
+  const vague = vaguePlanSteps(plan.steps);
+  if (vague.length) {
+    console.warn(`[plan] vague step(s) ${vague.join(', ')} — asking once more`);
+    plan = await structured({ system: SYSTEM_PLAN, content: `${content}\n\nYour previous plan had vague step(s) ${vague.join(', ')}. Rewrite EVERY step as concrete physical actions a beginner can follow without guessing: which object, which side, what to cut/fold/attach, where, with which owned tool, roughly how far, and what it looks like afterwards.`, schema: PLAN_SCHEMA, effort: 'high', maxTokens: 5000, label: 'build plan (clearer)' });
+  }
   const byName = new Map(inventory.map((i) => [i.name.toLowerCase(), i]));
   plan.bom = plan.bom.map((b) => {
     const inv = b.inventoryItem ? byName.get(b.inventoryItem.toLowerCase()) : byName.get(b.name.toLowerCase());
@@ -538,6 +555,17 @@ function cuttingToolCheck(plan, project, inventory) {
   return [`Step${steps.length > 1 ? 's' : ''} ${steps.map((s) => s.n).join(', ')} ask${steps.length > 1 ? '' : 's'} you to cut, but none of your tools can cut (${(project.idea?.userTools || []).join(', ') || 'no tools listed'}). A drill can’t cut boards — you’ll need a saw, or keep the material at its full size.`];
 }
 
+/** Any guide step that uses a tool the user doesn't own is flagged at the top of the guide. */
+function planToolCheck(plan, project, inventory) {
+  const tools = [...(project.idea?.userTools || []), ...inventory.map((i) => i.name)];
+  const notes = [];
+  (plan.steps || []).forEach((s, i) => {
+    const missing = toolsNotOwned(`${s.title || ''} ${s.instructions || ''}`, tools).filter((t) => !/saw|scissors|knife/i.test(t) || !CUTTERS.test(tools.join(' ')));
+    if (missing.length) notes.push(`Step ${i + 1} uses ${missing.join(', ')}, which ${missing.length === 1 ? 'isn’t' : 'aren’t'} in your tools.`);
+  });
+  return notes;
+}
+
 /* ----------------------------- public API ----------------------------- */
 
 function unavailable() {
@@ -560,7 +588,7 @@ export async function generateIdeas(request, inventory, { onProgress } = {}) {
 
   // Research starts now, from the raw text and the selected inventory — in parallel with the
   // material parsing below instead of after it. It never throws; failures just mean no evidence.
-  const researchDone = researchIdeas({ text, inventory }).catch((err) => ({ sources: [], queries: [], error: `Web research failed (${err.message}).` }));
+  const researchDone = researchIdeas({ text, inventory, tools: req.tools || [] }).catch((err) => ({ sources: [], queries: [], error: `Web research failed (${err.message}).` }));
 
   let parsed = null;
   let adHoc = [];
@@ -629,11 +657,19 @@ export async function generateIdeas(request, inventory, { onProgress } = {}) {
   // repeats are removed — so an unrealistic idea is reported with its reason even when its name
   // resembles a realistic one, and the best version of a repeated idea is the one kept.
   let ungrounded = 0;
+  // Quality gate (qualityGate.js): steps and tools before grounding, the product itself after.
+  // The gate and the feasibility checks use the same tool list (req.userTools).
+  const classOf = (name) => materialClass(findInventoryItem(name, pool) || { name });
   const grounded = candidates.map((idea, rank) => {
-    const steps = concreteSteps(idea.steps);
-    if (steps.length < 2) return { rejected: true, name: idea.name, reason: 'its building steps were too vague to follow' };
-    const g = groundIdea({ ...idea, steps }, pool, testBatch, req);
-    return g && !g.rejected ? { ...g, modelRank: rank } : g;
+    const primaryClass = classOf(idea.primaryMaterial || idea.usesExisting?.[0]?.inventoryName || '');
+    const usesGlass = (idea.usesExisting || []).some((u) => classOf(u.inventoryName) === 'glass');
+    const s = checkSteps(idea, { userTools: req.userTools || [], primaryClass, usesGlass });
+    if (s.reject) return { rejected: true, name: idea.name, reason: s.reject };
+    const g = groundIdea({ ...idea, steps: s.steps, stepToolsMissing: s.toolsNeeded }, pool, testBatch, req);
+    if (!g || g.rejected) return g;
+    const bad = checkProduct(g);
+    if (bad) return { rejected: true, name: idea.name, reason: bad };
+    return { ...g, safetyNote: safetyNoteFor(g), modelRank: rank };
   });
   const rejected = grounded.filter((i) => i?.rejected).map(({ name, reason }) => ({ name, reason }));
   const kept = [];
@@ -674,7 +710,7 @@ export async function generateIdeas(request, inventory, { onProgress } = {}) {
         checked: true,
       };
     } else if (fromModel) {
-      unlock = { item: fromModel.item.trim(), type: 'material', why: fromModel.why, estPrice: r2(Number(fromModel.estPrice) || 0), ideas: fromModel.ideas.slice(0, 4).map(({ name, summary }) => ({ name, summary })), checked: false };
+      unlock = { item: fromModel.item.trim(), type: 'material', why: fromModel.why, estPrice: r2(Number(fromModel.estPrice) || 0), ideas: fromModel.ideas.slice(0, 4).map(({ name, summary, uses }) => ({ name, summary, uses: uses || [] })), checked: false };
     }
     if (unlock) unlock.currency = req.currency;
   }
@@ -742,7 +778,7 @@ export async function generatePlan(project, inventory, currency, { region, resea
   const unconfirmed = usedItems.filter((i) => !['user_confirmed', 'verified'].includes(i.dimensions?.status));
   const needsMeasure = plan.assumptions.filter((a) => a.needsMeasurement);
   plan.dimensionsValidated = unconfirmed.length === 0 && needsMeasure.length === 0;
-  const sizeIssues = [...cutCheck(plan, inventory), ...cuttingToolCheck(plan, project, inventory)];
+  const sizeIssues = [...cutCheck(plan, inventory), ...cuttingToolCheck(plan, project, inventory), ...(engine === 'ai' ? planToolCheck(plan, project, inventory) : [])];
   if (sizeIssues.length) plan.dimensionsValidated = false;
   plan.sizeIssues = sizeIssues;
   plan.validationNotes = [

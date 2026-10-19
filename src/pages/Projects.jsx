@@ -5,7 +5,6 @@ import { useApi } from '../hooks/useApi.js';
 import { useApp } from '../context/AppContext.jsx';
 import { Page, Button, Empty, ErrorState, LoadingBlock, StatusBadge, ExampleBadge, Progress, Stagger, StaggerItem } from '../components/ui.jsx';
 import { ProductPreview } from '../components/ProductPreview.jsx';
-import { assignPhotos } from '../components/productPhotos.js';
 import { PROJECT_STATUSES } from '../../shared/constants.js';
 import { money, pct, relTime } from '../utils/format.js';
 
@@ -42,7 +41,7 @@ export default function Projects() {
             {list.map((p, pi, arr) => (
               <StaggerItem key={p.id}>
                 <Link to={`/app/projects/${p.id}`} className="card interactive" style={{ display: 'block', color: 'inherit', textDecoration: 'none', height: '100%' }}>
-                  <div style={{ marginBottom: 12 }}><ProductPreview idea={p} photo={(arr.photos ||= assignPhotos(arr))[pi]} caption={false} /></div>
+                  <div style={{ marginBottom: 12 }}><ProductPreview idea={p} project={p} caption={false} /></div>
                   <div className="row-between" style={{ flexWrap: 'nowrap', alignItems: 'flex-start' }}>
                     <div className="strong" style={{ fontSize: 15 }}>{p.name}</div>
                     {p.isExample && <ExampleBadge />}

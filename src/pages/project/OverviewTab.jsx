@@ -44,7 +44,7 @@ export default function OverviewTab({ project: p, setProject, patch, action, ctx
       <div className="grid g-main">
         <Card>
           <div className="row" style={{ alignItems: 'flex-start', gap: 18, flexWrap: 'nowrap' }}>
-            <div className="hide-sm" style={{ width: 200, flex: 'none' }}><ProductPreview idea={p.idea || { name: p.name }} /></div>
+            <div className="hide-sm" style={{ width: 200, flex: 'none' }}><ProductPreview idea={p.idea || { name: p.name }} project={p} /></div>
             <div className="stack" style={{ minWidth: 0 }}>
               <p className="text-2">{p.idea?.summary || p.idea?.description}</p>
               {p.idea?.whyItFits && <p className="small"><strong>Why it fits: </strong><span className="text-2">{p.idea.whyItFits}</span></p>}

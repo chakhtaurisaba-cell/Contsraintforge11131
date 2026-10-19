@@ -33,10 +33,12 @@ export function phrasesFromText(text) {
 export function researchQueries({ materials, tools }) {
   const m = materials.slice(0, 4);
   if (!m.length) return [];
+  // Different angles, so the results discover different projects: the materials together; what
+  // the tools allow (or, with no tools, projects that need nothing else); the main material alone.
   const qs = [
     `DIY projects ${m.slice(0, 3).join(' ')}`,
-    `things to make from ${m[0]}${m[1] ? ` and ${m[1]}` : ''}`,
-    m.length > 1 ? `${m.slice(0, 2).join(' ')} ${tools[0] ? `${tools[0]} ` : ''}useful build ideas` : `useful ${m[0]} upcycling ideas`,
+    tools.length ? `${m.slice(0, 2).join(' ')} ${tools.slice(0, 2).join(' ')} DIY` : `things to make from ${m[0]}${m[1] ? ` and ${m[1]}` : ''} without extra materials`,
+    m.length > 1 ? `products made from ${m.slice(0, 2).join(' and ')}` : `useful ${m[0]} upcycling ideas`,
   ];
   const max = config.search.provider === 'duckduckgo' ? 2 : 3;
   return [...new Set(qs)].slice(0, max);
@@ -59,13 +61,13 @@ async function cachedSearch(query) {
  * Runs the searches in parallel with a deadline. Returns { sources: [{n, url, title, snippet}],
  * queries, error } — sources are numbered for the prompt (sourceRefs) and deduplicated by URL.
  */
-export async function researchIdeas({ text = '', inventory = [] } = {}) {
+export async function researchIdeas({ text = '', inventory = [], tools = [] } = {}) {
   if (!config.ai.ideaResearch) return { sources: [], queries: [], skipped: 'off' };
   if (!searchAvailable()) return { sources: [], queries: [], skipped: 'no_search' };
   const fromText = phrasesFromText(text);
   const phrases = {
     materials: [...new Set([...fromText.materials, ...inventory.filter((i) => !TOOL_WORDS.test(i.name)).map((i) => i.name.toLowerCase())])],
-    tools: fromText.tools,
+    tools: [...new Set([...fromText.tools, ...tools.map((t) => String(t).toLowerCase()), ...inventory.filter((i) => TOOL_WORDS.test(i.name)).map((i) => i.name.toLowerCase())])],
   };
   const queries = researchQueries(phrases);
   if (!queries.length) return { sources: [], queries: [] };
@@ -79,12 +81,16 @@ export async function researchIdeas({ text = '', inventory = [] } = {}) {
     return { sources: [], queries, error: 'Web research took too long, so the ideas are the AI’s own reasoning.' };
   }
   const seen = new Set();
+  const perSite = {};
   const sources = [];
   for (const r of settled) {
     if (r.status !== 'fulfilled') continue;
     for (const s of r.value) {
       const key = s.url.replace(/[#?].*$/, '').replace(/\/$/, '');
       if (seen.has(key)) continue;
+      // Variety: at most 3 results from one site.
+      const site = new URL(s.url).hostname.replace(/^www\./, '');
+      if ((perSite[site] = (perSite[site] || 0) + 1) > 3) continue;
       seen.add(key);
       sources.push({ n: sources.length + 1, url: s.url, title: s.title.slice(0, 140), snippet: (s.snippet || '').slice(0, 260) });
     }

@@ -74,6 +74,16 @@ See `.env.example`.
 4. **Only buildable ideas become cards** — buildable now, or after confirming an amount. Ideas that need a tool or material the user lacks are listed under "left out" with the reason.
 5. **One-item unlock**: when fewer than 3 strong projects remain, the result names the ONE addition that unlocks the most. It is computed from the checked ideas whose only gap is that single item (and labelled as checked); otherwise it is the model's suggestion (labelled as not yet checked), and never something the user already owns. With no buildable idea at all the result says "I couldn't find a strong, realistic project using only these materials." and shows that one item and the projects it unlocks, with a button that adds it and generates again.
 
+### Final quality gate
+
+Every idea passes `server/services/qualityGate.js` before it can become a card (and is listed under "left out" with the reason otherwise):
+
+- **Clear steps:** steps like "prepare the materials", "assemble the components" or "attach securely" are removed; fewer than two real steps, or no physical action at all, rejects the idea.
+- **Exact tools:** every tool a step uses (scissors, knife, saw, drill, screwdriver, hammer, needle, hot-glue gun, stapler, pliers, clamps…) must be in the user's tools — the same list the feasibility check uses. A cut with no cutting tool, a drilled hole with no drill, or screws with only a hammer marks the idea as "needs a tool" (not a card; it can become the one-item suggestion). When the user does own the cutting tool, a cut step that doesn't name it gets "(use your scissors)" / "(use your hand saw)".
+- **Glass safety:** cutting, drilling or breaking glass is rejected; glass may not hang from tape or glue (a cord, wire or hook is required), and a hanging jar gets a short safety note.
+- **Real transformations:** an owned object under a new name for what it already does — a jar "vase", a box "storage box", a cup "pencil holder", a bottle "water container" — is rejected unless something structural is done (cut, folded, drilled, a part added) or a new function is created (hanging holder, funnel, scoop, feeder…). Decoration alone (wrapping, painting) does not count.
+- **Material properties** are also spelled out in the prompt (glass is brittle; tape is light fastening only; cord can't make rigid surfaces; bottles can only be cut with a cutting tool; wood needs a saw and a joining method; cardboard is weak when wet).
+
 ### How ideas are grounded
 
 The app checks every candidate and shows only those that hold up. For every idea:
@@ -159,10 +169,14 @@ Provenance is tracked for important values:
 - Channel fee numbers in demo mode are planning placeholders. Live platform fees are not fetched.
 - Shopify: orders and draft products only. Fees and payouts are not imported. Other marketplaces are supported through CSV and manual recording only.
 - **Model mistakes.** The prompt forbids invented materials, impossible tool use and quantities beyond your stock, and the app independently catches oversize parts, missing cutting tools, invented materials and unnecessary purchases — but not every mistake (e.g. mismatched panel lengths). Check plans before cutting.
-- **Previews are concept illustrations** drawn in SVG from the product type and material (22 kinds). They show what the product is, not its exact proportions; the Design tab has the measured assembly view.
+- **Pictures are AI-generated previews** of each project, drawn from its own materials, look and steps. They can still differ from the finished build in details (exact proportions, tape colour); the Design tab has the measured assembly view. Without image access (no billing on the key) cards show a neutral "no picture" panel.
 - `npm test` runs against a local stand-in for the Gemini REST API (`tests/gemini-mock.js`) to cover request shape, images, schema output, validation, retries and error handling; the app itself never uses it. `npm run test:live` checks the real model end to end, but only that answers are valid and relevant, not how good they are.
 - DuckDuckGo search is keyless but unofficial and may rate-limit heavy use. Use SearXNG for heavier research.
 - The Shopify flow was not run against a live store.
+
+## Build guides
+
+The project page's guide (`generatePlan`) is generated for the exact card that was chosen: the prompt contains the card's own steps and `look` (the same description its picture is drawn from) and the complete list of the user's tools ("none — no cutting, drilling or sawing is possible" when empty). It asks for one physical action per step (usually 6–12): which object, which side, what to cut/fold/attach, where, with which owned tool, roughly how far, and what it looks like afterwards. A guide with vague steps is requested once more naming them, and any step that uses a tool the user doesn't own is flagged at the top of the guide.
 
 ## Workflow
 
@@ -174,12 +188,15 @@ Provenance is tracked for important values:
 
 ## Product pictures
 
-Each idea card shows an **AI-generated preview** of that exact idea, an **example photo** or a **concept illustration**, and says which.
+Every idea card — and every saved project — shows a picture generated for **that exact project**, or an honest state: a skeleton while it is being made, or a neutral "No picture yet / Picture unavailable" panel. There are no stock photos and no generic category drawings on cards any more: earlier versions matched a licensed photo or an SVG drawing to the product *kind* (so a "Bottle rolling pin" could be drawn as a vase, and every wooden shelf showed the same stock shelf), which did not show the user's project.
 
-- **AI-generated previews** (`server/ai/images.js`) come from a Google image model — by default `gemini-nano-banana-2.1` through the Interactions API of the official `@google/genai` SDK (`gemini-3.8-flash` itself does not generate images). The prompt describes the idea's name, purpose, size and exactly the materials it uses, with no other materials, text or people. A picture is requested only when its card comes on screen (two at a time), so ideas appear first and never wait for pictures. Pictures are cached by a hash of the idea (memory + database), so an identical idea is never generated twice, and they are saved with a project created from the card. **Cost:** Google's image models have no free tier (about US$0.034 per 1K picture at the time of writing); `AI_IMAGE_DAILY_LIMIT` (default 150/day) caps new pictures and `AI_IMAGES=off` disables them. If the key has no image access, the server stops trying for 30 minutes, `/api/health` → `ai.images` says why, and cards keep the photo or illustration below. Every generated image carries Google's SynthID watermark.
-
-- **Example photos** (`public/products/`, 23 images) come from Wikimedia Commons and Openverse (Flickr) under free licences — CC0, public domain, CC BY or CC BY-SA. Each was reviewed by eye before being added. A photo shows that *kind* of product in that material (a wooden wall shelf, a jar candle, a fabric zip pouch…), not the user's exact design. `src/components/productPhotos.js` decides when one fits: kind and material must match, and the product's name must not describe a different design (a "two-tier shelf unit" doesn't get the single-shelf photo). One photo is never shown twice in the same list. Credits are on the About page (`/about#credits`) and in each photo's tooltip.
-- **Concept illustrations** are drawn in SVG for everything else (cardboard organisers, bottle planters, bookshelves… — no suitable licensed photo was found). They show the product type in its material, not exact proportions. If a photo ever fails to load, the drawing is shown instead.
+- **Model and API:** a Google image model — by default `gemini-nano-banana-2.1` ("Nano Banana 2.1"), called through the Interactions API of the official `@google/genai` SDK (`ai.interactions.create` with `response_format: {type: 'image', mime_type: 'image/jpeg', aspect_ratio: '4:3', image_size: '1K'}`). `gemini-3.8-flash` itself does not generate images. `GEMINI_IMAGE_MODEL` can switch to e.g. `gemini-3.1-flash-lite-image`.
+- **Same object as the card:** `server/ai/images.js` first builds a compact visual specification from the card itself — project name, visible materials with quantities, final shape (the card's `look`), construction method (its build steps), important visual details (hand-cut edges, hand-applied tape, knots) and **forbidden materials** (every material class the project does not use: with only a bottle and tape, no wood, screws, metal, rope, glue, electronics or fabric). The prompt asks for one photorealistic, clearly handmade object on a neutral tabletop, matching the construction, with no text, logos or people.
+- **Asynchronous:** cards appear as soon as the ideas are checked; then every card's picture is requested (best card first, three at a time) and each card shows its picture as soon as it is ready. Saved projects without a picture get one when their card comes on screen (two at a time) and keep it.
+- **Failures:** a timeout or server error is retried once; a failed picture leaves the neutral panel and never affects the ideas. If the key has no image access, the server stops trying for 30 minutes, `/api/health` → `ai.images` says why, and remaining cards show the neutral panel.
+- **Vercel:** pictures are returned to the browser as data URLs (~100–200 KB JPEG at 1K) and stored inside the project's own record when a project is saved; the server cache in SQLite is only a best-effort saving (on Vercel it lives in `/tmp` and disappears on restart, which only means a picture may be generated again). No extra storage service is used. Trade-off: project records are larger, and an identical idea on a cold Vercel instance may be paid for twice.
+- **Cost:** Google's image models have **no free tier** (about US$0.034 per 1K picture at the time of writing, so up to ~US$0.40 for a 12-card run). `AI_IMAGE_DAILY_LIMIT` (default 150/day) caps new pictures; `AI_IMAGES=off` disables them. Per-key rate limits are shown in Google AI Studio. Every generated image carries Google's SynthID watermark.
+- The licensed example photos (`public/products/`) remain only on the About page.
 
 ## About us
 

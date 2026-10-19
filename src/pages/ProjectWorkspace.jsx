@@ -41,7 +41,7 @@ function ProjectSummary({ project: p, goTo }) {
   const missing = alloc ? alloc.purchases : p.idea?.missing || [];
   return (
     <div className="card project-summary" style={{ marginBottom: 18 }}>
-      <ProductPreview idea={p.idea || { name: p.name }} />
+      <ProductPreview idea={p.idea || { name: p.name }} project={p} />
       <div className="stack" style={{ gap: 10, minWidth: 0 }}>
         <p className="text-2">{p.idea?.summary || p.idea?.description || p.idea?.tagline}</p>
         {owned.length > 0 && (
