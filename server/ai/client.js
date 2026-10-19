@@ -15,7 +15,7 @@ import { webSearch, fetchPage, searchAvailable, searchStatus } from './search.js
 import { extractJSON, conformToSchema, toGeminiSchema } from './json.js';
 
 const missingKey = !config.ai.apiKey;
-const status = { state: !config.ai.enabled ? 'unconfigured' : missingKey ? 'missing_key' : 'unchecked', checkedAt: null, detail: null };
+const status = { state: !config.ai.enabled ? 'unconfigured' : missingKey ? 'missing_key' : 'unchecked', checkedAt: null, detail: null, lastRejection: null };
 
 export const aiConfigured = () => config.ai.enabled && !missingKey;
 /** True when AI calls can be attempted (configured, and the key/model weren't rejected). */
@@ -44,6 +44,8 @@ export function aiStatus() {
     credentialSource: aiConfigured() ? 'GEMINI_API_KEY (server-side)' : null,
     search,
     checkedAt: status.checkedAt,
+    // Google's message for the last request it rejected (400) — never contains the key.
+    lastRejection: status.lastRejection,
     maintainerHint: (typeof hint === 'function' ? hint() : hint) || (!search.available ? `Web research is off: ${search.missing ? `set ${search.missing}` : 'SEARCH_PROVIDER=off'}.` : null),
   };
 }
@@ -96,8 +98,9 @@ function mapError(err, { timedOut, cancelled }) {
   if (cancelled) return new AIError('The request was cancelled.', 499, 'cancelled');
   if (timedOut) return new AIError('The AI took too long to answer. Please try again.', 504, 'ai_timeout', true);
   const code = Number(err?.status) || 0;
-  const msg = String(err?.message || '').slice(0, 300);
+  // Google's message names the rejected field (e.g. "Invalid value at 'generation_config…'").
   // The SDK's messages don't contain the key; log the status and message only.
+  const msg = String(err?.message || '').slice(0, 2000);
   console.error(`[ai] gemini error ${code || ''}: ${msg}`);
   if (code === 401 || code === 403 || /api key not valid|API_KEY_INVALID|permission denied/i.test(msg)) {
     setState('unauthorized', msg);
@@ -112,7 +115,10 @@ function mapError(err, { timedOut, cancelled }) {
     return new AIError('AI analysis is unavailable: the configured AI model isn’t available.', 503, 'ai_unavailable');
   }
   if (code >= 500) return new AIError('The AI service is temporarily unavailable. Please try again.', 503, 'ai_unavailable_temp', true);
-  if (code === 400) return Object.assign(new AIError('The AI service could not process this request.', 422, 'ai_bad_request'), { detail: msg });
+  if (code === 400) {
+    status.lastRejection = { at: new Date().toISOString(), message: msg.slice(0, 500) };
+    return Object.assign(new AIError('The AI service could not process this request.', 422, 'ai_bad_request'), { detail: msg });
+  }
   setState('unreachable', msg);
   return new AIError('The AI service could not be reached. Please try again in a moment.', 503, 'ai_unreachable', true);
 }
@@ -152,11 +158,20 @@ async function generate({ contents, cfg, label, onText }) {
     return out;
   } catch (err) {
     const mapped = mapError(err, { timedOut, cancelled: !timedOut && clientGone?.aborted });
-    // A model that doesn't accept the thinking setting: drop it and try once more.
-    if (mapped.code === 'ai_bad_request' && cfg.thinkingConfig && /thinking/i.test(mapped.detail || '')) {
-      thinkingSupported = false;
-      const { thinkingConfig, ...rest } = cfg;
-      return generate({ contents, cfg: rest, label, onText });
+    if (mapped.code === 'ai_bad_request') {
+      // Which request was rejected, without content or secrets.
+      const parts = contents.flatMap((c) => c.parts || []);
+      console.error(`[ai] ${label}: Gemini rejected the request (400). Sent: model=${config.ai.model}, config keys=[${Object.keys(cfg).join(', ')}], thinking=${cfg.thinkingConfig?.thinkingLevel || 'default'}, schema=${cfg.responseJsonSchema ? `${JSON.stringify(cfg.responseJsonSchema).length} B` : 'none'}, turns=${contents.length}, text parts=${parts.filter((p) => p.text != null).length}, images=${parts.filter((p) => p.inlineData).map((p) => p.inlineData.mimeType).join('/') || 0}, maxOutputTokens=${cfg.maxOutputTokens ?? 'default'}`);
+      // Retry once with only the essentials: no thinking setting, and the JSON schema moved into
+      // the instructions (the reply is still validated with zod by the caller).
+      const optional = ['thinkingConfig', 'responseJsonSchema', 'maxOutputTokens'].filter((k) => k in cfg);
+      if (optional.length) {
+        if (cfg.thinkingConfig && /thinking/i.test(mapped.detail || '')) thinkingSupported = false;
+        const { thinkingConfig, responseJsonSchema, maxOutputTokens, ...rest } = cfg;
+        if (responseJsonSchema) rest.systemInstruction = `${cfg.systemInstruction || ''}\n\nReply with ONE JSON object that follows this JSON Schema exactly:\n${JSON.stringify(responseJsonSchema)}`;
+        console.warn(`[ai] ${label}: retrying without ${optional.join(', ')}`);
+        return generate({ contents, cfg: rest, label: `${label} (minimal config)`, onText });
+      }
     }
     throw mapped;
   } finally {
@@ -224,7 +239,7 @@ export async function structured({ system, content, schema, effort = 'medium', m
   for (let attempt = 1; attempt <= 2; attempt++) {
     const res = await generate({
       contents,
-      cfg: { systemInstruction: system, responseMimeType: 'application/json', responseJsonSchema, temperature: 0.3, maxOutputTokens: outputTokens, ...thinkingFor(effort) },
+      cfg: { systemInstruction: system, responseMimeType: 'application/json', responseJsonSchema, maxOutputTokens: outputTokens, ...thinkingFor(effort) },
       label,
       onText: onProgress,
     });
@@ -248,7 +263,7 @@ export async function structured({ system, content, schema, effort = 'medium', m
 export async function text({ system, messages, effort = 'low', maxTokens = 1000, label = 'text' }) {
   ensureEnabled('AI');
   const contents = messages.map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: m.role === 'user' ? toParts(m.content) : [{ text: String(m.content) }] }));
-  const res = await generate({ contents, cfg: { systemInstruction: system, temperature: 0.4, maxOutputTokens: Math.max(1024, maxTokens * 2), ...thinkingFor(effort) }, label });
+  const res = await generate({ contents, cfg: { systemInstruction: system, maxOutputTokens: Math.max(1024, maxTokens * 2), ...thinkingFor(effort) }, label });
   return (res.text || '').trim();
 }
 
@@ -374,7 +389,7 @@ export async function chatWithResearch({ system, messages, effort = 'low' }) {
   let reply = '';
   for (let round = 0; round < 5; round++) {
     const offerTools = useTools && round < 4;
-    const res = await generate({ contents, cfg: { systemInstruction: system + note, temperature: 0.4, maxOutputTokens: 2048, ...(offerTools ? { tools: ASSISTANT_TOOLS } : {}), ...thinkingFor(effort) }, label: 'assistant' });
+    const res = await generate({ contents, cfg: { systemInstruction: system + note, maxOutputTokens: 2048, ...(offerTools ? { tools: ASSISTANT_TOOLS } : {}), ...thinkingFor(effort) }, label: 'assistant' });
     if (offerTools && res.functionCalls.length) {
       // The model's own turn goes back unchanged (Gemini 3 needs its thought signatures).
       contents.push(res.content || { role: 'model', parts: res.functionCalls.map((fc) => ({ functionCall: fc })) });

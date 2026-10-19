@@ -33,6 +33,8 @@ export function toGeminiSchema(node) {
   const out = {};
   for (const [k, v] of Object.entries(n)) {
     if (!KEEP.has(k)) continue;
+    // zod's z.int() adds ±Number.MAX_SAFE_INTEGER bounds: noise, not a real limit.
+    if ((k === 'minimum' || k === 'maximum') && Math.abs(v) >= Number.MAX_SAFE_INTEGER) continue;
     if (k === 'properties' || k === '$defs') out[k] = Object.fromEntries(Object.entries(v).map(([pk, pv]) => [pk, toGeminiSchema(pv)]));
     else if (k === 'items' || k === 'anyOf' || k === 'prefixItems') out[k] = toGeminiSchema(v);
     else out[k] = v;

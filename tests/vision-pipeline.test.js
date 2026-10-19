@@ -44,6 +44,8 @@ before(async () => {
     if (mode === 'crash') return { status: 500, error: 'backend exploded' };
     if (mode === 'rate_limited') return { status: 429, error: 'Resource has been exhausted (e.g. check quota).' };
     if (mode === 'always_invalid') return '{"objects": [ {"name": "broken"';
+    if (mode === 'reject_config' && _call.raw.generationConfig?.responseJsonSchema) return { status: 400, error: "Invalid JSON payload received. Unknown name \"x\" at 'generation_config.response_json_schema'" };
+    if (mode === 'always_400') return { status: 400, error: 'Request contains an invalid argument.' };
     if (mode === 'invalid_then_ok' && state.calls.length === 1) return '{"objects": [ {"name": "broken"';
     if (mode === 'reference') {
       return JSON.stringify(scene({
@@ -123,6 +125,39 @@ test('malformed model output is retried once, then succeeds', async () => {
   assert.equal(mock.calls.length, 2);
   assert.ok(mock.calls[1].messages.length > mock.calls[0].messages.length, 'the retry adds a corrective turn');
   assert.equal(r.objects.length, 2);
+});
+
+test('Gemini 3.8 request: no deprecated sampling parameters; thinking only as a valid level', async () => {
+  mode = 'basic';
+  mock.calls = [];
+  await vision.analyseImages([jpeg()]);
+  const gc = mock.calls[0].raw.generationConfig;
+  for (const k of ['temperature', 'topP', 'topK', 'candidateCount', 'presencePenalty', 'frequencyPenalty']) assert.ok(!(k in gc), `${k} must not be sent`);
+  assert.ok(!gc.thinkingConfig?.thinkingBudget, 'no thinking_budget');
+  if (gc.thinkingConfig) assert.ok(['LOW', 'MEDIUM', 'HIGH'].includes(gc.thinkingConfig.thinkingLevel), 'MINIMAL is rejected by gemini-3.8-flash');
+});
+
+test('a 400 from Gemini: retried once with a minimal config (schema in the instructions), still validated', async () => {
+  mode = 'reject_config';
+  mock.calls = [];
+  const r = await vision.analyseImages([jpeg()]);
+  assert.equal(mock.calls.length, 2);
+  const retry = mock.calls[1].raw;
+  assert.equal(retry.generationConfig.responseMimeType, 'application/json');
+  assert.ok(!retry.generationConfig.responseJsonSchema && !retry.generationConfig.thinkingConfig);
+  assert.match(mock.calls[1].messages[0].content, /JSON Schema exactly/);
+  assert.equal(retry.contents[0].parts.filter((p) => p.inlineData).length, 1, 'the photo is sent again');
+  assert.equal(r.objects.length, 2);
+});
+
+test('a 400 that persists: one retry only, then an honest error', async () => {
+  mode = 'always_400';
+  mock.calls = [];
+  await assert.rejects(vision.analyseImages([jpeg()]), (e) => e.code === 'ai_bad_request' && !/invalid argument/.test(e.message));
+  assert.equal(mock.calls.length, 2);
+  assert.match(client.aiStatus().lastRejection.message, /invalid argument/, 'Google’s reason is visible in /api/health for the maintainer');
+  assert.ok(!JSON.stringify(client.aiStatus()).includes(MOCK_KEY));
+  mode = 'basic';
 });
 
 test('invalid output twice: a retryable error, never a fabricated result', async () => {
