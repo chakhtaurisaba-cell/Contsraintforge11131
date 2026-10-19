@@ -26,6 +26,7 @@ let ideation;
 before(async () => {
   mock = await startGeminiMock((body) => {
     if (mode === 'down') return { status: 503, error: 'The model is overloaded. Please try again later.' };
+    if (mode === 'reject_thinking' && body.raw.generationConfig?.thinkingConfig) return { status: 400, error: 'Request contains an invalid argument.' };
     const sys = body.messages[0].content;
     const user = body.messages.at(-1).content;
     if (sys.startsWith('You extract a structured inventory')) {
@@ -331,4 +332,20 @@ test('structured output — the ideation call sends a JSON schema with every ide
   assert.match(shelf.whyFeasible, /brackets/);
   assert.equal(shelf.sellable.realistic, true);
   assert.ok(shelf.potentialUse);
+});
+
+test('ideas flow with a 400 INVALID_ARGUMENT: the invalid feature is found with real retries and generation still succeeds', async () => {
+  mode = 'reject_thinking';
+  mock.calls = [];
+  const r = await ideation.generateIdeas({ freeText: '3 pine boards, screws, wood glue, sandpaper, hammer, hand saw', quantity: 1, currency: 'GEL' }, []);
+  assert.equal(r.status, 'ok');
+  assert.ok(r.ideas.length >= 1);
+  const client = await import('../server/ai/client.js');
+  assert.equal(client.aiStatus().invalidArgument.feature, 'thinkingConfig');
+  assert.equal(client.aiStatus().invalidArgument.call, 'parse materials');
+  const parseCalls = mock.calls.filter((c) => c.messages[0].content.startsWith('You extract a structured inventory'));
+  assert.equal(parseCalls.length, 2, 'one rejected request, one accepted');
+  assert.ok(parseCalls[1].format, 'structured output is kept — only thinking was removed');
+  assert.ok(mock.calls.every((c, i) => i === 0 || !c.raw.generationConfig?.thinkingConfig), 'later calls skip it');
+  mode = 'ok';
 });

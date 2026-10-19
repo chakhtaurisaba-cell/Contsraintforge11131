@@ -15,7 +15,7 @@ import { webSearch, fetchPage, searchAvailable, searchStatus } from './search.js
 import { extractJSON, conformToSchema, toGeminiSchema } from './json.js';
 
 const missingKey = !config.ai.apiKey;
-const status = { state: !config.ai.enabled ? 'unconfigured' : missingKey ? 'missing_key' : 'unchecked', checkedAt: null, detail: null, lastRejection: null };
+const status = { state: !config.ai.enabled ? 'unconfigured' : missingKey ? 'missing_key' : 'unchecked', checkedAt: null, detail: null, lastRejection: null, invalidArgument: null, requestAdjustments: [] };
 
 export const aiConfigured = () => config.ai.enabled && !missingKey;
 /** True when AI calls can be attempted (configured, and the key/model weren't rejected). */
@@ -46,6 +46,9 @@ export function aiStatus() {
     checkedAt: status.checkedAt,
     // Google's message for the last request it rejected (400) — never contains the key.
     lastRejection: status.lastRejection,
+    // Found by removing request features one at a time after a 400 (see generate()).
+    invalidArgument: status.invalidArgument,
+    requestAdjustments: status.requestAdjustments,
     maintainerHint: (typeof hint === 'function' ? hint() : hint) || (!search.available ? `Web research is off: ${search.missing ? `set ${search.missing}` : 'SEARCH_PROVIDER=off'}.` : null),
   };
 }
@@ -89,9 +92,67 @@ function gemini() {
   return client;
 }
 
-// Thinking level for quick calls. If the model rejects the setting it is dropped for good.
-let thinkingSupported = true;
-const thinkingFor = (effort) => (thinkingSupported && effort === 'low' ? { thinkingConfig: { thinkingLevel: 'LOW' } } : {});
+// Thinking level for quick calls (LOW is valid for gemini-3.8-flash; MINIMAL is not).
+const thinkingFor = (effort) => (effort === 'low' ? { thinkingConfig: { thinkingLevel: 'LOW' } } : {});
+
+/*
+ * Optional request features, in the order they are removed when Gemini answers 400
+ * INVALID_ARGUMENT. Removing them one at a time until Gemini accepts the request identifies the
+ * invalid argument with the real API (logged, and shown in /api/health). What was found stays
+ * off for later calls on this server instance; replies are still validated with zod.
+ */
+const OPTIONAL_FEATURES = ['thinkingConfig', 'responseJsonSchema', 'maxOutputTokens', 'systemInstruction', 'responseMimeType'];
+const rejected = new Set();
+
+const hasFeature = (cfg, f) => cfg[f] !== undefined;
+
+/** The request without the features in `off`; their content is kept where it matters. */
+function withoutFeatures(contents, cfg, off) {
+  const out = { ...cfg };
+  let sys = cfg.systemInstruction || '';
+  if (off.has('thinkingConfig')) delete out.thinkingConfig;
+  if (off.has('maxOutputTokens')) delete out.maxOutputTokens;
+  if (off.has('responseJsonSchema') && cfg.responseJsonSchema) {
+    delete out.responseJsonSchema;
+    sys += `\n\nReply with ONE JSON object that follows this JSON Schema exactly:\n${JSON.stringify(cfg.responseJsonSchema)}`;
+  }
+  if (off.has('responseMimeType') && cfg.responseMimeType) {
+    delete out.responseMimeType;
+    sys += '\n\nReply with the JSON only — no prose, no code fences.';
+  }
+  let turns = contents;
+  delete out.systemInstruction;
+  if (sys && off.has('systemInstruction')) {
+    // Instructions as a text part at the start of the first user turn.
+    const i = turns.findIndex((c) => c.role === 'user');
+    turns = turns.map((c, j) => (j === i ? { ...c, parts: [{ text: `Instructions:\n${sys}` }, ...(c.parts || [])] } : c));
+  } else if (sys) {
+    // The REST form ({parts:[…]}, no role); a plain string would be sent with role "user".
+    out.systemInstruction = { parts: [{ text: sys }] };
+  }
+  return { contents: turns, cfg: out };
+}
+
+/** What was sent, for the logs — never content, keys or secrets. */
+function describeRequest(contents, cfg, stream) {
+  const parts = contents.flatMap((c) => c.parts || []);
+  return [
+    `model=${config.ai.model}`,
+    `method=${stream ? 'generateContentStream' : 'generateContent'}`,
+    `config keys=[${Object.keys(cfg).join(', ')}]`,
+    `structured output=${cfg.responseJsonSchema ? 'yes' : 'no'}`,
+    `responseMimeType=${cfg.responseMimeType || 'none'}`,
+    `schema=${cfg.responseJsonSchema ? `${JSON.stringify(cfg.responseJsonSchema).length} B` : 'none'}`,
+    `tools=${cfg.tools ? cfg.tools.flatMap((t) => (t.functionDeclarations || []).map((d) => d.name)).join('/') || 'yes' : 'none'}`,
+    `thinking=${cfg.thinkingConfig?.thinkingLevel || 'default'}`,
+    `maxOutputTokens=${cfg.maxOutputTokens ?? 'default'}`,
+    `systemInstruction=${cfg.systemInstruction ? 'yes' : 'no'}`,
+    `turns=${contents.map((c) => c.role).join('/')}`,
+    `text parts=${parts.filter((p) => p.text != null).length}`,
+    `images=${parts.filter((p) => p.inlineData).length}${parts.some((p) => p.inlineData) ? ` (${[...new Set(parts.filter((p) => p.inlineData).map((p) => p.inlineData.mimeType))].join(', ')})` : ''}`,
+    `function parts=${parts.filter((p) => p.functionCall || p.functionResponse).length}`,
+  ].join(', ');
+}
 
 /** Turns an SDK/network error into a user-safe AIError and records the cause for maintainers. */
 function mapError(err, { timedOut, cancelled }) {
@@ -123,12 +184,9 @@ function mapError(err, { timedOut, cancelled }) {
   return new AIError('The AI service could not be reached. Please try again in a moment.', 503, 'ai_unreachable', true);
 }
 
-/**
- * One generateContent call with a timeout and browser-disconnect cancellation. With `onText`
- * the reply is streamed and onText(textSoFar) is called as it arrives (real progress).
- * Returns { text, functionCalls, content, finishReason, usage }.
- */
-async function generate({ contents, cfg, label, onText }) {
+
+/** One request with a timeout and browser-disconnect cancellation. */
+async function generateOnce({ contents, cfg, label, onText }) {
   const controller = new AbortController();
   const clientGone = requestScope.getStore()?.signal;
   let timedOut = false;
@@ -158,25 +216,46 @@ async function generate({ contents, cfg, label, onText }) {
     return out;
   } catch (err) {
     const mapped = mapError(err, { timedOut, cancelled: !timedOut && clientGone?.aborted });
-    if (mapped.code === 'ai_bad_request') {
-      // Which request was rejected, without content or secrets.
-      const parts = contents.flatMap((c) => c.parts || []);
-      console.error(`[ai] ${label}: Gemini rejected the request (400). Sent: model=${config.ai.model}, config keys=[${Object.keys(cfg).join(', ')}], thinking=${cfg.thinkingConfig?.thinkingLevel || 'default'}, schema=${cfg.responseJsonSchema ? `${JSON.stringify(cfg.responseJsonSchema).length} B` : 'none'}, turns=${contents.length}, text parts=${parts.filter((p) => p.text != null).length}, images=${parts.filter((p) => p.inlineData).map((p) => p.inlineData.mimeType).join('/') || 0}, maxOutputTokens=${cfg.maxOutputTokens ?? 'default'}`);
-      // Retry once with only the essentials: no thinking setting, and the JSON schema moved into
-      // the instructions (the reply is still validated with zod by the caller).
-      const optional = ['thinkingConfig', 'responseJsonSchema', 'maxOutputTokens'].filter((k) => k in cfg);
-      if (optional.length) {
-        if (cfg.thinkingConfig && /thinking/i.test(mapped.detail || '')) thinkingSupported = false;
-        const { thinkingConfig, responseJsonSchema, maxOutputTokens, ...rest } = cfg;
-        if (responseJsonSchema) rest.systemInstruction = `${cfg.systemInstruction || ''}\n\nReply with ONE JSON object that follows this JSON Schema exactly:\n${JSON.stringify(responseJsonSchema)}`;
-        console.warn(`[ai] ${label}: retrying without ${optional.join(', ')}`);
-        return generate({ contents, cfg: rest, label: `${label} (minimal config)`, onText });
-      }
-    }
+    if (mapped.code === 'ai_bad_request') console.error(`[ai] ${label}: Gemini rejected the request (400). Sent: ${describeRequest(contents, cfg, Boolean(onText))}`);
     throw mapped;
   } finally {
     clearTimeout(timer);
     clientGone?.removeEventListener('abort', onGone);
+  }
+}
+
+/**
+ * A generateContent call. With `onText` the reply is streamed and onText(textSoFar) is called as
+ * it arrives (real progress). Returns { text, functionCalls, content, finishReason, usage }.
+ * On 400 INVALID_ARGUMENT, optional features are removed one at a time until Gemini accepts the
+ * request; the last one removed is reported as the invalid argument.
+ */
+async function generate({ contents, cfg, label, onText }) {
+  const off = new Set([...rejected].filter((f) => hasFeature(cfg, f)));
+  const tried = [];
+  for (;;) {
+    const req = withoutFeatures(contents, cfg, off);
+    try {
+      const out = await generateOnce({ ...req, label: tried.length ? `${label} (without ${[...off].join(', ')})` : label, onText });
+      if (tried.length) {
+        const culprit = tried.at(-1);
+        rejected.add(culprit);
+        status.requestAdjustments = [...rejected];
+        status.invalidArgument = { feature: culprit, call: label, at: new Date().toISOString(), message: status.lastRejection?.message || null };
+        console.warn(`[ai] ${label}: Gemini accepted the request once "${culprit}" was removed — "${culprit}" is the invalid argument. It stays off for later calls${tried.length > 1 ? ` (${tried.slice(0, -1).join(', ')} only had to be removed on the way)` : ''}.`);
+      }
+      return out;
+    } catch (err) {
+      if (err.code !== 'ai_bad_request') throw err;
+      const next = OPTIONAL_FEATURES.find((f) => !off.has(f) && hasFeature(cfg, f));
+      if (!next) {
+        console.error(`[ai] ${label}: still rejected with every optional feature removed${tried.length ? ` (${tried.join(', ')})` : ''} — the invalid argument is in the core request (model, contents or tools).`);
+        throw err;
+      }
+      off.add(next);
+      tried.push(next);
+      console.warn(`[ai] ${label}: retrying without ${next}`);
+    }
   }
 }
 

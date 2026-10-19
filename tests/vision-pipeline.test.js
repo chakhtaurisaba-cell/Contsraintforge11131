@@ -137,24 +137,46 @@ test('Gemini 3.8 request: no deprecated sampling parameters; thinking only as a 
   if (gc.thinkingConfig) assert.ok(['LOW', 'MEDIUM', 'HIGH'].includes(gc.thinkingConfig.thinkingLevel), 'MINIMAL is rejected by gemini-3.8-flash');
 });
 
-test('a 400 from Gemini: retried once with a minimal config (schema in the instructions), still validated', async () => {
+test('systemInstruction is sent in the REST form, without a role', async () => {
+  mode = 'basic';
+  mock.calls = [];
+  await vision.analyseImages([jpeg()]);
+  const si = mock.calls[0].raw.systemInstruction;
+  assert.ok(si.parts[0].text.length > 20);
+  assert.equal(si.role, undefined);
+});
+
+test('a 400 from Gemini: features are removed one at a time; the invalid one is identified and stays off', async () => {
   mode = 'reject_config';
   mock.calls = [];
   const r = await vision.analyseImages([jpeg()]);
   assert.equal(mock.calls.length, 2);
   const retry = mock.calls[1].raw;
-  assert.equal(retry.generationConfig.responseMimeType, 'application/json');
-  assert.ok(!retry.generationConfig.responseJsonSchema && !retry.generationConfig.thinkingConfig);
-  assert.match(mock.calls[1].messages[0].content, /JSON Schema exactly/);
+  assert.equal(retry.generationConfig.responseMimeType, 'application/json', 'only the invalid feature is removed');
+  assert.ok(!retry.generationConfig.responseJsonSchema);
+  assert.ok(retry.generationConfig.maxOutputTokens, 'features that were fine are kept');
+  assert.match(mock.calls[1].messages[0].content, /JSON Schema exactly/, 'the schema moves into the instructions');
   assert.equal(retry.contents[0].parts.filter((p) => p.inlineData).length, 1, 'the photo is sent again');
-  assert.equal(r.objects.length, 2);
+  assert.equal(r.objects.length, 2, 'the reply is still validated and used');
+  const s = client.aiStatus();
+  assert.equal(s.invalidArgument.feature, 'responseJsonSchema');
+  assert.equal(s.invalidArgument.call, 'scan photos');
+  assert.deepEqual(s.requestAdjustments, ['responseJsonSchema']);
+  mock.calls = [];
+  await vision.analyseImages([jpeg()]);
+  assert.equal(mock.calls.length, 1, 'later calls skip the invalid feature directly');
 });
 
-test('a 400 that persists: one retry only, then an honest error', async () => {
+test('a 400 that persists: every optional feature removed once, then an honest error', async () => {
   mode = 'always_400';
   mock.calls = [];
   await assert.rejects(vision.analyseImages([jpeg()]), (e) => e.code === 'ai_bad_request' && !/invalid argument/.test(e.message));
-  assert.equal(mock.calls.length, 2);
+  // schema is already off; then maxOutputTokens, systemInstruction, responseMimeType → 4 requests, never more.
+  assert.equal(mock.calls.length, 4);
+  const last = mock.calls.at(-1).raw;
+  assert.equal(last.systemInstruction, undefined);
+  assert.match(last.contents[0].parts[0].text, /^Instructions:/, 'instructions move into the user turn');
+  assert.ok(!last.generationConfig?.responseMimeType);
   assert.match(client.aiStatus().lastRejection.message, /invalid argument/, 'Google’s reason is visible in /api/health for the maintainer');
   assert.ok(!JSON.stringify(client.aiStatus()).includes(MOCK_KEY));
   mode = 'basic';
