@@ -113,7 +113,7 @@ export function Footer() {
       </div>
       <div className="h-wrap h-foot-base mono">
         <span>© {new Date().getFullYear()} ConstraintForge</span>
-        <span>Runs on your machine · your data stays local</span>
+        <span>Your inventory stays in your own database</span>
       </div>
     </footer>
   );

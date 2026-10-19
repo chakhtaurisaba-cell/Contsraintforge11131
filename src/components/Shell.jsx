@@ -64,7 +64,7 @@ function Rail() {
         </div>
       ))}
       <div className="rail-foot">
-        <span className={`engine-dot ${health?.ai?.enabled ? 'on' : ''}`} title={health?.ai?.enabled ? 'AI engine connected (local Ollama)' : 'AI unavailable — rule-based engine active'} />
+        <span className={`engine-dot ${health?.ai?.enabled ? 'on' : ''}`} title={health?.ai?.enabled ? 'AI engine connected (Google Gemini)' : 'AI unavailable — rule-based engine active'} />
       </div>
     </nav>
   );
@@ -117,7 +117,7 @@ function Topbar() {
         </AnimatePresence>
       </div>
       <div className="spacer" />
-      {health && !aiEnabled && <Badge tone="warn" icon={FlaskConical} title="The local AI model isn’t available — the rule-based engine is active.">Demo</Badge>}
+      {health && !aiEnabled && <Badge tone="warn" icon={FlaskConical} title="The AI service isn’t available — the rule-based engine is active.">Demo</Badge>}
       <Link to="/" className="btn btn-ghost btn-sm hide-sm"><Home size={14} />Website</Link>
       <ThemeToggle />
       <Button variant="primary" size="sm" icon={Plus} onClick={() => nav('/app/create')} className="hide-sm">New idea</Button>

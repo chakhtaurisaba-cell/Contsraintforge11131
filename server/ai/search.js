@@ -5,7 +5,6 @@
 // Providers (SEARCH_PROVIDER):
 //   duckduckgo (default) — keyless, uses DuckDuckGo's HTML results page
 //   searxng              — your own SearXNG instance (SEARXNG_URL), keyless
-//   ollama               — Ollama's hosted web search (needs OLLAMA_API_KEY)
 //   off                  — research disabled; features say so instead of guessing
 import { isIP } from 'node:net';
 import { config } from '../config.js';
@@ -21,7 +20,7 @@ export class SearchError extends Error {
 
 export function searchStatus() {
   const s = config.search;
-  const missing = s.provider === 'searxng' && !s.searxngUrl ? 'SEARXNG_URL' : s.provider === 'ollama' && !s.ollamaApiKey ? 'OLLAMA_API_KEY' : null;
+  const missing = s.provider === 'searxng' && !s.searxngUrl ? 'SEARXNG_URL' : null;
   return { provider: s.provider, available: s.provider !== 'off' && !missing, missing };
 }
 export const searchAvailable = () => searchStatus().available;
@@ -89,21 +88,11 @@ async function searchSearxng(query, max) {
   return (data.results || []).slice(0, max).map((r) => ({ url: r.url, title: r.title || '', snippet: r.content || '' }));
 }
 
-async function searchOllama(query, max) {
-  const res = await getText('https://ollama.com/api/web_search', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${config.search.ollamaApiKey}` },
-    body: JSON.stringify({ query, max_results: max }),
-  });
-  const data = await res.json();
-  return (data.results || []).map((r) => ({ url: r.url, title: r.title || '', snippet: (r.content || '').slice(0, 400) }));
-}
-
 /** One real web search. Returns [{url, title, snippet}]. */
 export async function webSearch(query, { max = 5 } = {}) {
   const st = searchStatus();
   if (!st.available) throw new SearchError(st.missing ? `Web search needs ${st.missing} in .env.` : 'Web search is turned off (SEARCH_PROVIDER=off).', 'search_not_configured');
-  const fn = { duckduckgo: searchDuckDuckGo, searxng: searchSearxng, ollama: searchOllama }[st.provider];
+  const fn = { duckduckgo: searchDuckDuckGo, searxng: searchSearxng }[st.provider];
   if (!fn) throw new SearchError(`Unknown SEARCH_PROVIDER "${st.provider}".`, 'search_not_configured');
   try {
     return (await fn(String(query).slice(0, 300), max)).filter((r) => r.url && r.title);
@@ -152,11 +141,6 @@ function htmlToText(html) {
 /** Download a page and return its readable text (truncated). */
 export async function fetchPage(url, { maxChars = config.search.maxPageChars } = {}) {
   if (!isPublicUrl(url)) throw new SearchError('Only public web pages can be read.', 'fetch_blocked');
-  if (config.search.provider === 'ollama' && config.search.ollamaApiKey) {
-    const res = await getText('https://ollama.com/api/web_fetch', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${config.search.ollamaApiKey}` }, body: JSON.stringify({ url }) }, 20000);
-    const d = await res.json();
-    return { url, title: d.title || '', text: String(d.content || '').slice(0, maxChars) };
-  }
   const res = await getText(url, { headers: { accept: 'text/html,text/plain;q=0.9' } }, 15000);
   const type = res.headers.get('content-type') || '';
   if (!/text\/html|text\/plain|application\/xhtml/.test(type)) throw new SearchError(`Not a readable page (${type.split(';')[0] || 'unknown type'}).`, 'fetch_unreadable');

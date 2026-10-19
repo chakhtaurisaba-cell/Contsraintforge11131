@@ -1,17 +1,20 @@
-// Ideation pipeline (requirement tests 1, 4, 5, 8) against a LOCAL MOCK of the Ollama API.
+// Ideation pipeline (requirement tests 1, 4, 5, 8) against a LOCAL MOCK of the Gemini API.
 // The mock plays the model; everything after it — input validation, reuse-first
 // reconciliation of the model's shopping list against real stock, scoring, honest
 // errors — is the real application code.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { startOllamaMock, useMock } from './ollama-mock.js';
+import { startGeminiMock, useMock } from './gemini-mock.js';
 
 const idea = (o = {}) => ({
-  name: 'Bracket wall shelf', summary: 'A small wall shelf.', category: 'Home & storage', primaryMaterial: 'Pine boards',
+  name: 'Bracket wall shelf', summary: 'A small wall shelf.', whyFeasible: 'One board cut in two, fixed with the owned brackets and screws.', category: 'Home & storage', primaryMaterial: 'Pine boards',
   usesExisting: [{ inventoryName: 'Pine boards', quantityUsed: 1, unit: 'pcs', use: 'shelf board' }],
   missing: [], substitutions: [], optionalUpgrades: [], toolsRequired: ['Drill / driver'],
   difficulty: 'beginner', estProductionMinutes: 60, size: { length: 600, width: 150, height: 150 }, priceLow: 40, priceHigh: 60,
-  targetCustomers: ['renters'], safetyNote: '', dependsOnMeasurements: [], visualKind: 'wall_shelf',
+  targetCustomers: ['renters'], safetyNote: '', dependsOnMeasurements: [],
+  steps: ['Cut the board to 600 mm.', 'Screw the brackets to the board.', 'Fix the shelf to the wall.'],
+  potentialUse: 'Holds books or plants in a small room.', sellable: { realistic: true, note: 'Sells locally as a simple shelf.' },
+  visualKind: 'wall_shelf',
   ...o,
 });
 let extraIdeas = [];
@@ -21,8 +24,8 @@ let mock;
 let ideation;
 
 before(async () => {
-  mock = await startOllamaMock((body) => {
-    if (mode === 'down') return { status: 500, error: 'llama-server process has terminated' };
+  mock = await startGeminiMock((body) => {
+    if (mode === 'down') return { status: 503, error: 'The model is overloaded. Please try again later.' };
     const sys = body.messages[0].content;
     const user = body.messages.at(-1).content;
     if (sys.startsWith('You extract a structured inventory')) {
@@ -311,4 +314,21 @@ test('feasibility — what a product holds is not what it is made of ("stand for
   const r = await ideation.generateIdeas({ quantity: 1, tools: ['Drill / driver', 'Saw'], currency: 'GEL' }, [pine, screws, brackets]);
   extraIdeas = [];
   assert.ok(r.ideas.some((i) => i.name === 'Wooden stand for glass jars'), JSON.stringify(r.rejected));
+});
+
+test('structured output — the ideation call sends a JSON schema with every idea field, and they reach the result', async () => {
+  mode = 'ok';
+  mock.calls = [];
+  const r = await ideation.generateIdeas({ quantity: 1, tools: ['Drill / driver', 'Saw'], currency: 'GEL' }, [pine, screws, brackets]);
+  const call = mock.calls.find((c) => c.messages[0].content.startsWith('You are the product-ideation engine'));
+  assert.equal(call.responseMimeType, 'application/json');
+  const item = call.format.properties.ideas.items;
+  for (const k of ['name', 'summary', 'whyFeasible', 'usesExisting', 'missing', 'toolsRequired', 'steps', 'difficulty', 'estProductionMinutes', 'potentialUse', 'sellable']) {
+    assert.ok(item.properties[k], `schema has ${k}`);
+  }
+  const shelf = r.ideas.find((i) => i.name === 'Bracket wall shelf');
+  assert.equal(shelf.steps.length, 3);
+  assert.match(shelf.whyFeasible, /brackets/);
+  assert.equal(shelf.sellable.realistic, true);
+  assert.ok(shelf.potentialUse);
 });

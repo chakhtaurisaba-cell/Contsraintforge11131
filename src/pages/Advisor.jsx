@@ -178,7 +178,7 @@ export default function Advisor() {
       {(runInfo || busy === 'run') && (
         <div style={{ marginBottom: 16 }} className="stack">
           <AnalysisResult result={runInfo} running={busy === 'run'} currency={currency} />
-          {runInfo?.summary?.hasData && !aiEnabled && <Banner tone="warn">The numbers and recommendations are complete; plain-language explanations need the local AI model (Ollama).</Banner>}
+          {runInfo?.summary?.hasData && !aiEnabled && <Banner tone="warn">The numbers and recommendations are complete; plain-language explanations need the AI service (Google Gemini), which isn’t available right now.</Banner>}
         </div>
       )}
       <div className="row" style={{ marginBottom: 16 }}>

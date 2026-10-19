@@ -1,7 +1,7 @@
-// LIVE tests against the real local Ollama server and the model configured in .env.
-// Nothing here is mocked: each test sends real requests to the real model, through the
-// client directly and through the real API server. They are slow on small GPUs
-// (minutes per idea list), so they run separately: `npm run test:live`.
+// LIVE tests against the real Google Gemini API (gemini-3.8-flash), using GEMINI_API_KEY from
+// the environment or .env. Nothing here is mocked: each test sends real requests to the real
+// model, through the client directly and through the real API server. They use API quota, so
+// they run separately: `npm run test:live`.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -21,7 +21,7 @@ let client;
 let liveIdea = null;
 let liveProjectId = null;
 
-/** HTTP request without fetch's 300 s header timeout (local generations can be slower). */
+/** HTTP request without fetch's 300 s header timeout. */
 function request(path, { method = 'GET', body, headers = {} } = {}) {
   return new Promise((resolve, reject) => {
     const req = http.request(`${BASE}${path}`, { method, headers }, (res) => {
@@ -44,10 +44,13 @@ function request(path, { method = 'GET', body, headers = {} } = {}) {
 const postJSON = (path, data) => request(path, { method: 'POST', body: JSON.stringify(data), headers: { 'content-type': 'application/json' } });
 
 before(async () => {
-  // Fail loudly (not skip) when Ollama is down: these tests exist to prove the real thing works.
+  // Fail loudly (not skip) without a key or when Gemini is unreachable: these tests exist to
+  // prove the real thing works.
   client = await import('../../server/ai/client.js');
+  assert.ok(process.env.GEMINI_API_KEY?.trim(), 'GEMINI_API_KEY is not set — add it to .env (or the environment) to run the live Gemini tests.');
+  assert.ok(!process.env.GEMINI_BASE_URL, 'GEMINI_BASE_URL is for the mock tests only; unset it for live tests.');
   const status = await client.probeAI();
-  assert.equal(status.state, 'ready', `Ollama/model not ready: ${status.state} — ${status.maintainerHint}`);
+  assert.equal(status.state, 'ready', `Gemini not ready: ${status.state} — ${status.maintainerHint}`);
 
   server = spawn(process.execPath, ['server/index.js'], {
     env: { ...process.env, PORT: String(PORT), DB_PATH: join(dir, 'live.db'), SEARCH_PROVIDER: 'off' },
@@ -77,10 +80,28 @@ after(async () => {
   rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 });
 
-test('probe: the configured model is installed and can read images', () => {
+test('probe: the key is accepted and gemini-3.8-flash is available', () => {
   const s = client.aiStatus();
   assert.equal(s.available, true);
-  assert.ok(s.capabilities?.includes('vision'), `capabilities: ${s.capabilities}`);
+  assert.equal(s.provider, 'gemini');
+  assert.equal(s.model, 'gemini-3.8-flash');
+  assert.ok(!JSON.stringify(s).includes(process.env.GEMINI_API_KEY.trim()), 'the status never contains the key');
+});
+
+test('client: multimodal input — the real model reads a photo', { timeout: 5 * MINUTES }, async () => {
+  const Schema = z.object({ objects: z.array(z.object({ name: z.string().min(1), material: z.string() })).min(1).max(5) });
+  const out = await client.structured({
+    system: 'You identify objects in photos. Answer in JSON only.',
+    content: [
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: plankPng().toString('base64') } },
+      { type: 'text', text: 'List the objects in this photo and what they are made of.' },
+    ],
+    schema: Schema,
+    effort: 'low',
+    maxTokens: 400,
+  });
+  assert.ok(out.objects.length >= 1);
+  console.log('[live] photo objects:', JSON.stringify(out.objects));
 });
 
 test('client: schema-constrained generation returns validated JSON from the real model', { timeout: 10 * MINUTES }, async () => {
@@ -102,11 +123,12 @@ test('client: free-text generation answers the question', { timeout: 10 * MINUTE
   assert.match(out.toLowerCase(), /screwdriver|drill|driver/);
 });
 
-test('API: /health reports the local Ollama model as ready', async () => {
+test('API: /health reports Gemini as ready without exposing the key', async () => {
   const r = await request('/health');
   assert.equal(r.status, 200);
+  assert.ok(!r.raw.includes(process.env.GEMINI_API_KEY.trim()), 'the key never reaches the browser');
   assert.equal(r.json.ai.enabled, true);
-  assert.equal(r.json.ai.status.provider, 'ollama');
+  assert.equal(r.json.ai.status.provider, 'gemini');
   assert.equal(r.json.ai.status.state, 'ready');
   assert.equal(r.json.ai.model, client.aiStatus().model);
 });
@@ -129,7 +151,42 @@ test('API: /scan sends a real photo to the vision model and returns validated ob
   }
 });
 
-test('API: /ideas turns typed materials into AI-generated, scored product ideas', { timeout: 15 * MINUTES }, async () => {
+test('API: sample inventory (3 pine boards, screws, wood glue, sandpaper, hammer, hand saw) gives realistic, complete, structured ideas', { timeout: 10 * MINUTES }, async () => {
+  const r = await postJSON('/ideas', { freeText: '3 pine boards, screws, wood glue, sandpaper, hammer, hand saw', quantity: 1 });
+  assert.equal(r.status, 200, r.raw);
+  assert.equal(r.json.status, 'ok', r.json.message);
+  assert.equal(r.json.engine, 'ai');
+  const ideas = r.json.ideas;
+  assert.ok(ideas.length >= 2, `expected several ideas, got ${ideas.length}`);
+  console.log(`[live] ${ideas.length} ideas:\n${ideas.map((i) => `  - ${i.name} [${i.verdict}, ${i.difficulty}, ${i.estProductionMinutes} min] tools: ${i.toolsRequired.join(', ')}${i.toolsMissing.length ? ` (missing: ${i.toolsMissing.join(', ')})` : ''}${i.missing.length ? ` buy: ${i.missing.map((m) => `${m.quantity} ${m.name}`).join(', ')}` : ''}\n    why: ${i.whyFeasible}\n    steps: ${i.steps.join(' | ')}`).join('\n')}`);
+  assert.equal(new Set(ideas.map((i) => i.name.toLowerCase())).size, ideas.length, 'no repeated ideas');
+  for (const i of ideas) {
+    // Every field the cards and the details view need, validated by the server's schema.
+    assert.ok(i.name.trim() && i.summary.trim(), 'name and description');
+    assert.ok(i.whyFeasible.trim().length > 15, `why feasible: ${i.whyFeasible}`);
+    assert.ok(i.materials.length >= 1, 'materials with quantities');
+    for (const m of i.materials) assert.ok(Number(m.needTotal) > 0, `quantity for ${m.name}`);
+    assert.ok(Array.isArray(i.toolsRequired), 'tools');
+    assert.ok(i.steps.length >= 3 && i.steps.length <= 8, `steps: ${i.steps.length}`);
+    for (const s of i.steps) assert.ok(s.trim().length >= 10, `step too vague: "${s}"`);
+    assert.ok(['beginner', 'intermediate', 'advanced'].includes(i.difficulty), i.difficulty);
+    assert.ok(i.estProductionMinutes > 0 && i.estProductionMinutes <= 24 * 60, `build time ${i.estProductionMinutes}`);
+    assert.ok(i.potentialUse.trim(), 'potential use');
+    assert.equal(typeof i.sellable.realistic, 'boolean');
+    assert.ok(typeof i.sellable.note === 'string');
+    // Realism: built from the listed stock, never more boards than the 3 owned.
+    assert.ok(i.fit.itemsUsed >= 1, 'built from the inventory');
+    const boards = i.usesExisting.filter((u) => /pine|board/i.test(u.inventoryName)).reduce((s, u) => s + Number(u.quantityUsed || 0), 0);
+    assert.ok(boards <= 3, `${i.name} uses ${boards} boards but only 3 are owned`);
+    assert.ok(!i.missing.some((m) => /pine|board/i.test(m.name)), `${i.name} buys boards: ${JSON.stringify(i.missing)}`);
+    // No power tools the user doesn't have, unless the app flags them as missing.
+    const power = i.toolsRequired.filter((t) => /drill|jigsaw|router|circular|power|sander|nail gun/i.test(t) && !/hand/i.test(t));
+    for (const t of power) assert.ok(i.toolsMissing.some((m) => m.toLowerCase().includes(t.toLowerCase().split(/[ /]/)[0])) || i.verdict !== 'ready', `${i.name} needs "${t}" but is marked ready`);
+  }
+  assert.ok(ideas.some((i) => i.verdict !== 'short'), 'at least one idea needs nothing bought');
+});
+
+test('API: /ideas turns typed materials into AI-generated, scored product ideas',{ timeout: 15 * MINUTES }, async () => {
   const r = await postJSON('/ideas', { freeText: 'I have 4 pine boards (1 m × 15 cm × 18 mm), a box of 100 wood screws, wood glue, a hand saw, a cordless drill, a tape measure and sandpaper. I am a beginner.', quantity: 3 });
   assert.equal(r.status, 200, r.raw);
   assert.equal(r.json.status, 'ok', r.json.message);

@@ -79,7 +79,7 @@ function GeneratingState({ progress, startedAt, hasText, onCancel }) {
             ))}
           </ol>
           <div className="row">
-            <span className="xs muted">Runs on your computer’s AI model. Usually under a minute.</span>
+            <span className="xs muted">Usually takes under a minute.</span>
             <div className="spacer" />
             <Button size="sm" variant="ghost" icon={X} onClick={onCancel}>Cancel</Button>
           </div>
@@ -215,6 +215,20 @@ function IdeaDetails({ idea, photo, onClose, onSave, onDevelop, busy, researchSt
               <summary className="small" style={{ padding: '8px 0' }}>Optional extras ({idea.optionalUpgrades.length}) — not needed<ChevronDown size={14} className="chev" /></summary>
               <ul className="list small" style={{ paddingBottom: 8 }}>{idea.optionalUpgrades.map((o, i) => <li key={i}>{o.name}{o.why ? <span className="muted"> — {o.why}</span> : null}</li>)}</ul>
             </details>
+          )}
+          {idea.whyFeasible && <p className="small"><span className="muted">Why it works: </span>{idea.whyFeasible}</p>}
+          {idea.steps?.length > 0 && (
+            <section>
+              <div className="label" style={{ marginBottom: 6 }}>How to build it</div>
+              <ol className="list small">{idea.steps.map((s, i) => <li key={i}>{s}</li>)}</ol>
+              <p className="xs muted" style={{ marginTop: 4 }}>Open the blueprint for the full guide with measurements and progress tracking.</p>
+            </section>
+          )}
+          {(idea.potentialUse || idea.sellable?.note) && (
+            <p className="small">
+              {idea.potentialUse && <><span className="muted">Use: </span>{idea.potentialUse} </>}
+              {idea.sellable?.note && <><span className="muted">{idea.sellable.realistic ? 'Selling: ' : 'Not really for sale: '}</span>{idea.sellable.note}</>}
+            </p>
           )}
           <ResearchBlock idea={idea} state={researchState} onResearch={onResearch} />
         </div>

@@ -42,7 +42,7 @@ export default function SellTab({ project: p, setProject, action, ctx }) {
         ) : (
           <div className="stack" style={{ gap: 10 }}>
             <p className="text-2">See two or three places that suit this product, a ready-to-use listing and a cautious price.</p>
-            {!aiEnabled && <Banner tone="warn">Selling suggestions need the local AI model, which isn’t available right now.</Banner>}
+            {!aiEnabled && <Banner tone="warn">Selling suggestions need the AI service, which isn’t available right now.</Banner>}
             <div><Button variant="primary" icon={Store} onClick={generate} disabled={!aiEnabled}>Show where to sell it</Button></div>
           </div>
         )}

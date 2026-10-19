@@ -4,11 +4,6 @@ const num = (v, d) => (v === undefined || v === '' || Number.isNaN(Number(v)) ? 
 
 // Vercel sets VERCEL=1 in its builds and functions.
 const onVercel = Boolean(process.env.VERCEL);
-// Local Ollama by default; on Vercel (where no local Ollama exists) the Ollama Cloud API.
-const ollamaHost = (process.env.OLLAMA_HOST || (onVercel ? 'https://ollama.com' : 'http://127.0.0.1:11434')).trim().replace(/\/+$/, '');
-const ollamaCloud = /^https:\/\/(www\.)?ollama\.com$/i.test(ollamaHost);
-// Server-side secret. Only ever sent to ollama.com — never to the browser, never in a VITE_ variable.
-const ollamaApiKey = (process.env.OLLAMA_API_KEY || '').trim();
 
 export const config = {
   port: num(process.env.PORT, 8787),
@@ -20,47 +15,27 @@ export const config = {
   isProd: process.env.NODE_ENV === 'production',
 
   ai: {
-    // 'ollama' = a local Ollama server (no key); 'ollama-cloud' = the Ollama Cloud API at ollama.com.
-    provider: ollamaCloud ? 'ollama-cloud' : 'ollama',
-    cloud: ollamaCloud,
-    baseUrl: ollamaHost,
-    apiKey: ollamaCloud ? ollamaApiKey : '',
-    // Must support image input for photo scanning. Local: the instruct variant answers directly
-    // (thinking variants are far slower on small GPUs). Cloud: gemma4:31b supports images
-    // (checked against https://ollama.com/api/tags and /api/show; qwen3-vl:235b was retired).
-    model: process.env.OLLAMA_MODEL || (ollamaCloud ? 'gemma4:31b' : 'qwen3-vl:4b-instruct'),
+    // Google Gemini through the official @google/genai SDK.
+    provider: 'gemini',
+    // Multimodal (text + images) with structured JSON output.
+    model: 'gemini-3.8-flash',
+    // Server-side secret, read only from GEMINI_API_KEY. Never sent to the browser, never logged,
+    // never put in a VITE_ variable (those are bundled into the frontend).
+    apiKey: (process.env.GEMINI_API_KEY || '').trim(),
+    // Tests only: point the SDK at a local stand-in server instead of Google.
+    baseUrl: (process.env.GEMINI_BASE_URL || '').trim() || undefined,
     enabled: process.env.AI_ENABLED !== 'false',
-    // One context size for every call (changing it reloads the model). 6144 holds a 4B model
-    // fully on a 4 GB GPU; 8192 no longer fits and 16384 ran at ~3 tok/s. A request that
-    // genuinely needs more (e.g. many photos) gets a larger context for that call only.
-    numCtx: num(process.env.OLLAMA_NUM_CTX, ollamaCloud ? 16384 : 6144),
-    // Candidate ideas asked from the model per request (≈200 tokens ≈ 4–5 s each at full GPU speed);
-    // unrealistic and repeated ones are filtered out afterwards.
+    // Candidate ideas asked from the model per request; unrealistic and repeated ones are filtered out afterwards.
     maxIdeas: Math.max(1, Math.min(10, num(process.env.AI_MAX_IDEAS, 8))),
-    keepAlive: process.env.OLLAMA_KEEP_ALIVE || '30m',
-    // GPU layers to offload (num_gpu). Unset = Ollama decides, which on a 4 GB laptop GPU put only
-    // 12 of 37 layers on the GPU (~12 tok/s); 99 = all layers (~45–50 tok/s) when they fit. If the
-    // GPU can't hold them the client falls back to Ollama's automatic split.
-    numGpu: ollamaCloud || process.env.OLLAMA_NUM_GPU === undefined || process.env.OLLAMA_NUM_GPU === '' ? null : num(process.env.OLLAMA_NUM_GPU, null),
-    // How structured answers are requested: 'schema' sends the JSON schema as Ollama's `format`
-    // (local Ollama enforces it); 'prompt' describes the JSON in the instructions and parses the
-    // reply (for servers that ignore or reject `format`, such as Ollama Cloud).
-    jsonMode: ['schema', 'prompt'].includes(process.env.AI_JSON_MODE) ? process.env.AI_JSON_MODE : ollamaCloud ? 'prompt' : 'schema',
-    // Let "thinking" models reason before answering. Better plans, much slower locally.
-    think: process.env.OLLAMA_THINK === 'true',
-    // Local models on modest GPUs are slow. A request fails if Ollama sends nothing for
-    // AI_TIMEOUT_MS (covers model loading), or runs longer than AI_MAX_REQUEST_MS overall.
-    timeoutMs: num(process.env.AI_TIMEOUT_MS, 120000),
-    // On Vercel a function is stopped at its maxDuration (300 s, api/index.js), so give up a little
-    // earlier and return a clear "took too long" error instead of a cut connection.
-    maxRequestMs: num(process.env.AI_MAX_REQUEST_MS, onVercel ? 270000 : 600000),
+    // One Gemini call may take this long before it is cancelled with a clear "took too long" error.
+    // On Vercel the whole function is stopped at 300 s (vercel.json), so one call stays well below it.
+    timeoutMs: num(process.env.AI_TIMEOUT_MS, onVercel ? 120000 : 180000),
   },
 
   search: {
-    // With an Ollama Cloud key, Ollama's web search is the more reliable default for a hosted app.
-    provider: (process.env.SEARCH_PROVIDER || (ollamaCloud && ollamaApiKey ? 'ollama' : 'duckduckgo')).toLowerCase(),
+    // Real web searches the server runs for research and the assistant: duckduckgo | searxng | off.
+    provider: (process.env.SEARCH_PROVIDER || 'duckduckgo').toLowerCase(),
     searxngUrl: (process.env.SEARXNG_URL || '').trim(),
-    ollamaApiKey,
     maxPageChars: num(process.env.SEARCH_MAX_PAGE_CHARS, 6000),
   },
 

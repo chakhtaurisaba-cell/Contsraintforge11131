@@ -1,64 +1,43 @@
-// JSON from models that don't (reliably) support structured outputs — e.g. Ollama Cloud.
+// JSON helpers for the AI layer.
 //
-// 1. schemaPrompt():   describes the required JSON shape in the prompt (a template + field notes),
-//                      so the model knows exactly what to return without a `format` schema.
-// 2. extractJSON():    finds the JSON in a reply that may contain prose, code fences, a <think>
-//                      block, trailing commas or smart quotes.
-// 3. conformToSchema(): repairs the usual deviations against the JSON schema before zod checks it —
-//                      numbers sent as strings, missing optional-looking fields, enum case, a bare
-//                      array instead of {ideas:[…]}, over-long lists. It never invents content.
+// - toGeminiSchema():  adapts the app's zod/JSON schemas to Gemini's structured-output subset.
+// - extractJSON():     finds the JSON value in a reply (prose, code fences, trailing commas…) — a
+//                      safety net behind Gemini's JSON mode and for the research/text helpers.
+// - conformToSchema(): repairs small deviations (numbers as strings, missing fields, enum case,
+//                      a bare array instead of {ideas:[…]}) before zod validates. Never invents content.
 
-/* ------------------------------ prompt ------------------------------ */
+/* ------------------------------ Gemini schema ------------------------------ */
 
 const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
 const typesOf = (s) => [].concat(s?.type || (s?.anyOf ? s.anyOf.map((x) => x.type) : [])).filter(Boolean);
 
-/** A compact JSON template of the schema: {"name":"string","difficulty":"beginner|intermediate|advanced",...} */
-function template(s) {
-  if (!s) return 'null';
-  if (s.anyOf) return template(s.anyOf.find((x) => x.type !== 'null') || s.anyOf[0]);
-  if (s.enum) return s.enum.join('|');
-  const t = typesOf(s).find((x) => x !== 'null');
-  if (t === 'object') return Object.fromEntries(Object.entries(s.properties || {}).map(([k, v]) => [k, template(v)]));
-  if (t === 'array') return [template(s.items)];
-  if (t === 'integer') return 0;
-  if (t === 'number') return 0;
-  if (t === 'boolean') return false;
-  return typesOf(s).includes('null') ? 'string or null' : 'string';
-}
-
-function notes(s, path = '', out = []) {
-  if (!s) return out;
-  if (s.anyOf) return notes(s.anyOf.find((x) => x.type !== 'null') || s.anyOf[0], path, out);
-  if (s.description && path) out.push(`- ${path}: ${s.description}`);
-  const t = typesOf(s).find((x) => x !== 'null');
-  if (t === 'object') for (const [k, v] of Object.entries(s.properties || {})) notes(v, path ? `${path}.${k}` : k, out);
-  if (t === 'array') notes(s.items, `${path}[]`, out);
-  return out;
-}
-
-/** Instructions that make a model reply with exactly this JSON shape. */
-export function schemaPrompt(jsonSchema) {
-  const fieldNotes = notes(jsonSchema);
-  return [
-    'OUTPUT FORMAT — reply with ONE JSON object and nothing else: no explanation, no markdown, no code fences.',
-    'Use exactly these keys and value types (strings in double quotes, numbers as plain numbers, "a|b|c" means pick one of those values):',
-    JSON.stringify(template(jsonSchema)),
-    ...(fieldNotes.length ? ['Field notes:', ...fieldNotes] : []),
-    'Every key is required. Fill every list with real entries for this request; inside an entry, use "" for unknown text, [] for an empty detail list, 0 for an unknown number and null where null is allowed.',
-    'Start your reply with { and end it with }.',
-  ].join('\n');
-}
+// The JSON Schema keywords Gemini's structured output documents (plus anyOf/$ref it accepts).
+const KEEP = new Set(['type', 'title', 'description', 'properties', 'required', 'additionalProperties', 'enum', 'format', 'minimum', 'maximum', 'items', 'prefixItems', 'minItems', 'maxItems', 'anyOf', '$ref', '$defs']);
 
 /**
- * The start of the reply, given as a prefilled assistant message, when the answer's first field
- * is a list of objects ({"ideas": [{…}]}): the model then writes its first entry instead of taking
- * the easy exit of an empty list. '' when no prefill is useful.
+ * A zod-generated JSON schema in the subset Gemini accepts for responseJsonSchema: nullable
+ * values become {"type": [X, "null"]}, constants become one-value enums, and keywords Gemini
+ * doesn't document (maxLength, pattern, default…) are dropped. Limits that matter are still
+ * enforced afterwards by zod.
  */
-export function prefillFor(jsonSchema) {
-  const [key, first] = Object.entries(jsonSchema?.properties || {})[0] || [];
-  if (!key || !typesOf(first).includes('array') || !typesOf(first.items).includes('object')) return '';
-  return `{"${key}": [\n  {`;
+export function toGeminiSchema(node) {
+  if (Array.isArray(node)) return node.map(toGeminiSchema);
+  if (!isObj(node)) return node;
+  let n = node;
+  // anyOf [X, {type:null}] → X with "null" added to its type.
+  if (Array.isArray(n.anyOf) && n.anyOf.length === 2 && n.anyOf.some((x) => x?.type === 'null')) {
+    const other = n.anyOf.find((x) => x?.type !== 'null');
+    if (other && typeof other.type === 'string') n = { ...other, ...(n.description ? { description: n.description } : {}), type: [other.type, 'null'] };
+  }
+  if ('const' in n) n = { ...n, enum: [n.const], type: n.type || typeof n.const };
+  const out = {};
+  for (const [k, v] of Object.entries(n)) {
+    if (!KEEP.has(k)) continue;
+    if (k === 'properties' || k === '$defs') out[k] = Object.fromEntries(Object.entries(v).map(([pk, pv]) => [pk, toGeminiSchema(pv)]));
+    else if (k === 'items' || k === 'anyOf' || k === 'prefixItems') out[k] = toGeminiSchema(v);
+    else out[k] = v;
+  }
+  return out;
 }
 
 /* ------------------------------ parsing ------------------------------ */

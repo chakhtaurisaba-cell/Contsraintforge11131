@@ -328,7 +328,7 @@ async function aiIdeas(request, inventory, { nudge = '', onDrafted } = {}) {
     // model otherwise tends to answer with an empty list.
     schema: IdeaResult.extend({ ideas: IdeaResult.shape.ideas.max(max).describe(`${max} different products these materials can make — always propose some; an empty list only if nothing at all is possible`) }),
     effort: 'medium',
-    maxTokens: 400 * max + 300,
+    maxTokens: 650 * max + 500,
     label: 'product ideas',
     onProgress: onDrafted && ((text) => {
       const n = text.split(LAST_IDEA_FIELD).length - 1;

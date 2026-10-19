@@ -12,9 +12,9 @@ import { loadExamples, removeExamples } from '../services/examples.js';
 export const core = Router();
 
 core.get('/health', async (_req, res) => {
-  // Re-check Ollama when it was down or the model was missing, so starting Ollama or
-  // pulling the model later is picked up without restarting this server.
-  if (['unreachable', 'model_unavailable', 'error', 'unchecked', 'out_of_memory'].includes(aiStatus().state)) await probeAI();
+  // Re-check Gemini when it was unreachable, the key was missing/rejected or the model unknown,
+  // so fixing the key or the network is picked up without restarting the server.
+  if (['unreachable', 'model_unavailable', 'error', 'unchecked', 'unauthorized'].includes(aiStatus().state)) await probeAI();
   // ai.status is safe to expose: it names the env var / model to fix, never a secret.
   // storage.temporary: on Vercel the SQLite file lives in /tmp and can disappear (see README).
   res.json({ ok: true, ai: { enabled: aiEnabled(), model: aiEnabled() ? config.ai.model : null, status: aiStatus() }, storage: { temporary: config.dbIsTemporary }, shopify: { configured: shopifyConfigured() } });

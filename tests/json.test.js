@@ -1,8 +1,10 @@
-// Robust JSON handling for models without structured outputs (Ollama Cloud).
+// JSON handling for model replies: lenient extraction and repair, and the conversion of zod's
+// JSON Schema to the subset Gemini's structured output accepts.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
-import { extractJSON, conformToSchema, schemaPrompt } from '../server/ai/json.js';
+import { extractJSON, conformToSchema, toGeminiSchema } from '../server/ai/json.js';
+import { ScanResult, ProductIdea } from '../server/ai/schemas.js';
 
 test('extractJSON: prose, code fences, think blocks, trailing commas, smart quotes', () => {
   assert.deepEqual(extractJSON('Sure! Here you go:\n```json\n{"a": 1, "b": [1, 2,],}\n```\nHope it helps.'), { a: 1, b: [1, 2] });
@@ -33,9 +35,32 @@ test('conformToSchema: an answer wrapped one level deep is unwrapped', () => {
   assert.equal(r.data.notes, 'x');
 });
 
-test('schemaPrompt describes every key and enum', () => {
-  const p = schemaPrompt(js);
-  assert.match(p, /ONE JSON object/);
-  assert.match(p, /"level":"beginner\|advanced"/);
-  assert.match(p, /"size":\{"length":0\}/);
+test('toGeminiSchema: nullable types, const and unsupported keywords', () => {
+  const g = toGeminiSchema(js);
+  assert.equal(g.$schema, undefined);
+  const item = g.properties.ideas.items;
+  assert.deepEqual(item.properties.note.type, ['string', 'null'], 'anyOf [string, null] becomes a nullable type');
+  assert.deepEqual(item.properties.level.enum, ['beginner', 'advanced']);
+  assert.deepEqual(item.required.sort(), ['count', 'level', 'name', 'note', 'size', 'tags']);
+  assert.deepEqual(toGeminiSchema({ const: 'x', pattern: '^a', type: 'string' }), { enum: ['x'], type: 'string' });
+});
+
+test('toGeminiSchema: the app schemas only use keywords Gemini supports', () => {
+  const allowed = new Set(['type', 'title', 'description', 'properties', 'required', 'additionalProperties', 'enum', 'format', 'minimum', 'maximum', 'items', 'prefixItems', 'minItems', 'maxItems', 'anyOf', '$ref', '$defs']);
+  const walk = (node, path) => {
+    if (Array.isArray(node)) return node.forEach((n, i) => walk(n, `${path}[${i}]`));
+    if (!node || typeof node !== 'object') return;
+    for (const [k, v] of Object.entries(node)) {
+      if (path.endsWith('.properties') || path.endsWith('.$defs')) walk(v, `${path}.${k}`);
+      else {
+        assert.ok(allowed.has(k), `unsupported keyword ${k} at ${path}`);
+        if (typeof v === 'object') walk(v, `${path}.${k}`);
+      }
+    }
+  };
+  for (const s of [ScanResult, ProductIdea]) {
+    const raw = z.toJSONSchema(s);
+    delete raw.$schema;
+    walk(toGeminiSchema(raw), '$');
+  }
 });

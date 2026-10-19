@@ -227,7 +227,7 @@ function Principles() {
             </Reveal>
           ))}
         </div>
-        <Reveal delay={0.1}><p className="ab-local mono"><Cpu size={14} />The AI runs on your own computer with Ollama — no paid AI service, and your data stays local.</p></Reveal>
+        <Reveal delay={0.1}><p className="ab-local mono"><Cpu size={14} />The AI is Google Gemini, called from the server — your API key never reaches the browser, and your inventory stays in your own database.</p></Reveal>
       </div>
     </section>
   );

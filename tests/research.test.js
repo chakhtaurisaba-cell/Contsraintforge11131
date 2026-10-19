@@ -2,7 +2,7 @@
 // and page reading cannot be pointed at the local machine or private networks.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { startOllamaMock, useMock } from './ollama-mock.js';
+import { startGeminiMock, useMock } from './gemini-mock.js';
 
 let reply = '';
 let mock;
@@ -10,7 +10,7 @@ let client;
 let search;
 
 before(async () => {
-  mock = await startOllamaMock(() => reply);
+  mock = await startGeminiMock(() => reply);
   useMock(mock);
   client = await import('../server/ai/client.js');
   search = await import('../server/ai/search.js');

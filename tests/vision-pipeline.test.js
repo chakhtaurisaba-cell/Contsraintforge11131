@@ -1,10 +1,10 @@
 // Vision pipeline tests (requirement tests A, B, C, H) against a LOCAL MOCK of the
-// Ollama API. This verifies everything ConstraintForge controls — request shape, image
+// Gemini API. This verifies everything ConstraintForge controls — request shape, image
 // encoding, schema-constrained output, validation, retries, calibration and error
 // mapping — but NOT the real model's recognition quality.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { startOllamaMock, useMock } from './ollama-mock.js';
+import { startGeminiMock, useMock, MOCK_KEY } from './gemini-mock.js';
 
 let mode = 'basic';
 const scene = (overrides = {}) => ({
@@ -40,8 +40,10 @@ let client;
 const jpeg = () => ({ mimetype: 'image/jpeg', buffer: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(64, 1)]) });
 
 before(async () => {
-  mock = await startOllamaMock((_body, state) => {
-    if (mode === 'crash') return { status: 500, error: 'llama-server process has terminated: CUDA error' };
+  mock = await startGeminiMock((_call, state) => {
+    if (mode === 'crash') return { status: 500, error: 'backend exploded' };
+    if (mode === 'rate_limited') return { status: 429, error: 'Resource has been exhausted (e.g. check quota).' };
+    if (mode === 'always_invalid') return '{"objects": [ {"name": "broken"';
     if (mode === 'invalid_then_ok' && state.calls.length === 1) return '{"objects": [ {"name": "broken"';
     if (mode === 'reference') {
       return JSON.stringify(scene({
@@ -55,29 +57,33 @@ before(async () => {
   client = await import('../server/ai/client.js');
   vision = await import('../server/services/vision.js');
 });
-after(() => mock.close());
+after(() => mock.close?.());
 
-test('configuration: Ollama and the model are detected and the startup probe reports ready', async () => {
+test('configuration: the Gemini key and model are detected and the startup probe reports ready', async () => {
   const s = await client.probeAI();
   assert.equal(s.configured, true);
   assert.equal(s.state, 'ready');
-  assert.equal(s.provider, 'ollama');
-  assert.equal(s.model, 'test-model:1b');
-  assert.ok(s.capabilities.includes('vision'));
+  assert.equal(s.provider, 'gemini');
+  assert.equal(s.model, 'gemini-3.8-flash');
+  assert.equal(s.credentialSource, 'GEMINI_API_KEY (server-side)');
+  assert.ok(!JSON.stringify(s).includes(MOCK_KEY), 'the status never contains the key');
 });
 
-test('A — basic scan: images are sent as base64 with a JSON schema format and parsed', async () => {
+test('A — basic scan: images are sent as base64 inlineData with a JSON schema and parsed', async () => {
   mode = 'basic';
   mock.calls = [];
   const r = await vision.analyseImages([jpeg()], { goal: 'identify' });
   assert.equal(mock.calls.length, 1);
   const req = mock.calls[0];
-  assert.equal(req.model, 'test-model:1b');
-  assert.equal(req.stream, true, 'streamed, so long generations never hit a header timeout');
+  assert.equal(req.model, 'gemini-3.8-flash');
+  assert.equal(mock.lastKey, MOCK_KEY, 'the key travels in the server-side request header');
+  assert.equal(req.responseMimeType, 'application/json');
   assert.equal(req.format.type, 'object');
   assert.ok(req.format.properties.objects, 'the ScanResult schema constrains the output');
+  assert.ok(!JSON.stringify(req.format).includes('"$schema"'), 'only Gemini-supported schema keywords are sent');
   const user = req.messages.find((m) => m.role === 'user');
   assert.equal(user.images.length, 1);
+  assert.equal(user.mimeTypes[0], 'image/jpeg');
   assert.equal(Buffer.from(user.images[0], 'base64')[0], 0xff, 'raw image bytes, base64-encoded');
   assert.equal(r.objects.length, 2);
   assert.equal(r.objects[0].name, 'Pine board');
@@ -115,35 +121,54 @@ test('malformed model output is retried once, then succeeds', async () => {
   mock.calls = [];
   const r = await vision.analyseImages([jpeg()]);
   assert.equal(mock.calls.length, 2);
+  assert.ok(mock.calls[1].messages.length > mock.calls[0].messages.length, 'the retry adds a corrective turn');
   assert.equal(r.objects.length, 2);
 });
 
-test('H — model crash: clean, retryable error and no fabricated result', async () => {
-  mode = 'crash';
-  await assert.rejects(vision.analyseImages([jpeg()]), (e) => e.code === 'ai_unavailable_temp' && e.retryable === true && !/CUDA|llama-server/i.test(e.message));
+test('invalid output twice: a retryable error, never a fabricated result', async () => {
+  mode = 'always_invalid';
+  mock.calls = [];
+  await assert.rejects(vision.analyseImages([jpeg()]), (e) => e.code === 'ai_invalid_output' && e.retryable === true);
+  assert.equal(mock.calls.length, 2, 'exactly one retry');
 });
 
-test('H — model not installed: generic user message, maintainer hint names the pull command, AI marked unavailable', async () => {
+test('H — Gemini server error: clean, retryable error without internal details', async () => {
+  mode = 'crash';
+  await assert.rejects(vision.analyseImages([jpeg()]), (e) => e.code === 'ai_unavailable_temp' && e.retryable === true && !/backend exploded/i.test(e.message));
+});
+
+test('H — rate limit (429): retryable "busy" error', async () => {
+  mode = 'rate_limited';
+  await assert.rejects(vision.analyseImages([jpeg()]), (e) => e.code === 'ai_rate_limited' && e.retryable === true);
+  assert.equal(client.aiStatus().state, 'rate_limited');
   mode = 'basic';
-  mock.modelInstalled = false;
+  assert.equal((await client.probeAI()).state, 'rate_limited', 'a metadata probe does not prove the quota is back');
+  await vision.analyseImages([jpeg()]);
+  assert.equal(client.aiStatus().state, 'ready', 'a successful generation clears it');
+});
+
+test('H — model not available: generic user message, maintainer hint names the model, AI marked unavailable', async () => {
+  mode = 'basic';
+  mock.modelAvailable = false;
   await assert.rejects(vision.analyseImages([jpeg()]), (e) => e.code === 'ai_unavailable' && !/not found|404/.test(e.message));
   const s = client.aiStatus();
   assert.equal(s.state, 'model_unavailable');
-  assert.match(s.maintainerHint, /ollama pull test-model:1b/);
+  assert.match(s.maintainerHint, /gemini-3\.8-flash/);
   mock.calls = [];
   await assert.rejects(vision.analyseImages([jpeg()]), (e) => e.code === 'ai_unavailable', 'no further calls once the model is known missing');
   assert.equal(mock.calls.length, 0);
-  mock.modelInstalled = true;
-  assert.equal((await client.probeAI()).state, 'ready', 'pulling the model later is picked up by a re-probe');
+  mock.modelAvailable = true;
+  assert.equal((await client.probeAI()).state, 'ready', 'a later re-probe picks the model up again');
 });
 
-test('H — Ollama not running: retryable "could not be reached" error', async () => {
-  const saved = mock.url;
-  mock.close();
-  await assert.rejects(vision.analyseImages([jpeg()]), (e) => e.code === 'ai_unreachable' && e.retryable === true);
-  assert.equal(client.aiStatus().state, 'unreachable');
-  assert.match(client.aiStatus().maintainerHint, /Ollama is not reachable/);
-  mock.url = saved;
+test('H — invalid API key: generic message, maintainer hint names GEMINI_API_KEY', async () => {
+  mock.keyValid = false;
+  await assert.rejects(vision.analyseImages([jpeg()]), (e) => e.code === 'ai_unauthorized' && !/api key/i.test(e.message));
+  const s = client.aiStatus();
+  assert.equal(s.state, 'unauthorized');
+  assert.match(s.maintainerHint, /GEMINI_API_KEY/);
+  mock.keyValid = true;
+  assert.equal((await client.probeAI()).state, 'ready');
 });
 
 test('non-image bytes are rejected before any AI call', async () => {
@@ -152,16 +177,9 @@ test('non-image bytes are rejected before any AI call', async () => {
   assert.equal(mock.calls.length, 0);
 });
 
-test('a model without vision is refused for photos up front', async () => {
-  // The first mock was closed by an earlier test; point the client at a fresh one.
-  const m2 = await startOllamaMock(() => JSON.stringify(scene()), { capabilities: ['completion'] });
-  process.env.OLLAMA_HOST = m2.url;
-  const { config } = await import('../server/config.js');
-  config.ai.baseUrl = m2.url;
-  const s = await client.probeAI();
-  assert.equal(s.state, 'no_vision');
-  assert.match(s.maintainerHint, /cannot read images/);
-  await assert.rejects(vision.analyseImages([jpeg()]), (e) => e.code === 'ai_no_vision');
-  assert.equal(m2.calls.length, 0, 'no request is sent to a model that cannot see');
-  m2.close();
+test('H — Gemini unreachable: retryable "could not be reached" error', async () => {
+  mock.close();
+  await assert.rejects(vision.analyseImages([jpeg()]), (e) => e.code === 'ai_unreachable' && e.retryable === true);
+  assert.equal(client.aiStatus().state, 'unreachable');
+  assert.match(client.aiStatus().maintainerHint, /could not be reached/);
 });

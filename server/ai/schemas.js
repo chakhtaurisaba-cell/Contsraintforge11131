@@ -80,6 +80,7 @@ export const VISUAL_KINDS = KINDS;
 export const ProductIdea = z.object({
   name: str.describe('short product name, at most 5 words'),
   summary: str.describe('ONE sentence: what it is and what it is for'),
+  whyFeasible: str.describe('one or two sentences: why it can really be built from exactly these materials, amounts and tools'),
   category: str,
   primaryMaterial: str.describe('exact inventory name of the main material the product is made of'),
   usesExisting: z.array(z.object({ inventoryName: str.describe('exact name of an inventory item'), quantityUsed: num.describe('amount per finished unit'), unit: str, use: str.describe('the part it becomes, 2–5 words') })),
@@ -90,6 +91,12 @@ export const ProductIdea = z.object({
   size: z.object({ length: num, width: num, height: num }).describe('approximate finished size in mm (length = widest side)'),
   safetyNote: str.describe('one short precaution specific to this product, or empty'),
   dependsOnMeasurements: z.array(str).describe('sizes the user must check before building'),
+  steps: z.array(str).describe('3–8 short, concrete building steps using the user’s own materials and tools, with measurements where relevant'),
+  potentialUse: str.describe('who would use it and for what, in one short sentence'),
+  sellable: z.object({
+    realistic: z.boolean().describe('true only if a buyer would plausibly pay for it as made from these materials'),
+    note: str.describe('one short selling suggestion if realistic (where/how), otherwise why not'),
+  }),
   visualKind: z.enum(VISUAL_KINDS).describe('the closest picture of the finished product'),
 });
 
