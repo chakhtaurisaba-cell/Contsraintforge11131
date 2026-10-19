@@ -68,7 +68,7 @@ test('configuration: the Gemini key and model are detected and the startup probe
   assert.equal(s.configured, true);
   assert.equal(s.state, 'ready');
   assert.equal(s.provider, 'gemini');
-  assert.equal(s.model, 'gemini-3.8-flash');
+  assert.equal(s.model, 'gemini-2.5-flash-lite');
   assert.equal(s.credentialSource, 'GEMINI_API_KEY (server-side)');
   assert.ok(!JSON.stringify(s).includes(MOCK_KEY), 'the status never contains the key');
 });
@@ -79,7 +79,7 @@ test('A — basic scan: images are sent as base64 inlineData with a JSON schema 
   const r = await vision.analyseImages([jpeg()], { goal: 'identify' });
   assert.equal(mock.calls.length, 1);
   const req = mock.calls[0];
-  assert.equal(req.model, 'gemini-3.8-flash');
+  assert.equal(req.model, 'gemini-2.5-flash-lite');
   assert.equal(mock.lastKey, MOCK_KEY, 'the key travels in the server-side request header');
   assert.equal(req.responseMimeType, 'application/json');
   assert.equal(req.format.type, 'object');
@@ -136,7 +136,7 @@ test('Gemini 3.8 request: no deprecated sampling parameters; thinking only as a 
   const gc = mock.calls[0].raw.generationConfig;
   for (const k of ['temperature', 'topP', 'topK', 'candidateCount', 'presencePenalty', 'frequencyPenalty']) assert.ok(!(k in gc), `${k} must not be sent`);
   assert.ok(!gc.thinkingConfig?.thinkingBudget, 'no thinking_budget');
-  if (gc.thinkingConfig) assert.ok(['LOW', 'MEDIUM', 'HIGH'].includes(gc.thinkingConfig.thinkingLevel), 'MINIMAL is rejected by gemini-3.8-flash');
+  if (gc.thinkingConfig) assert.ok(['LOW', 'MEDIUM', 'HIGH'].includes(gc.thinkingConfig.thinkingLevel), 'MINIMAL is rejected by Gemini 3 models');
 });
 
 test('systemInstruction is sent in the REST form, without a role', async () => {
@@ -232,7 +232,7 @@ test('H — model not available: generic user message, maintainer hint names the
   await assert.rejects(vision.analyseImages([jpeg()]), (e) => e.code === 'ai_unavailable' && !/not found|404/.test(e.message));
   const s = client.aiStatus();
   assert.equal(s.state, 'model_unavailable');
-  assert.match(s.maintainerHint, /gemini-3\.8-flash/);
+  assert.match(s.maintainerHint, /gemini-2\.5-flash-lite/);
   mock.calls = [];
   await assert.rejects(vision.analyseImages([jpeg()]), (e) => e.code === 'ai_unavailable', 'no further calls once the model is known missing');
   assert.equal(mock.calls.length, 0);

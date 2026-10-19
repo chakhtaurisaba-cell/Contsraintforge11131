@@ -17,8 +17,11 @@ export const config = {
   ai: {
     // Google Gemini through the official @google/genai SDK.
     provider: 'gemini',
-    // Multimodal (text + images) with structured JSON output.
-    model: 'gemini-3.8-flash',
+    // The text/reasoning model: multimodal (text + images) with structured JSON output.
+    // gemini-2.5-flash-lite: stable (no shutdown date announced); chosen for its free-tier quota — the
+    // exact per-project limits are shown in Google AI Studio.
+    // GEMINI_MODEL switches it without a code change (e.g. gemini-3.5-flash-lite, gemini-3.8-flash).
+    model: (process.env.GEMINI_MODEL || '').trim() || 'gemini-2.5-flash-lite',
     // Server-side secret, read only from GEMINI_API_KEY. Never sent to the browser, never logged,
     // never put in a VITE_ variable (those are bundled into the frontend).
     apiKey: (process.env.GEMINI_API_KEY || '').trim(),
@@ -33,7 +36,7 @@ export const config = {
     ideasBudgetMs: num(process.env.AI_IDEAS_BUDGET_MS, onVercel ? 90000 : 120000),
     // Web research before ideation (searches only, no page downloads): discovers possibilities.
     ideaResearch: process.env.AI_IDEA_RESEARCH !== 'off',
-    // Card pictures from Google's image model (separate from gemini-3.8-flash; paid only — no
+    // Card pictures from Google's image model (separate from the text model; paid only — no
     // free tier). Generated lazily per card, cached, and capped per day.
     images: {
       enabled: process.env.AI_IMAGES !== 'off',

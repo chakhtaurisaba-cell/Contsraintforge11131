@@ -42,7 +42,7 @@ const STATUS_NAME = { 400: 'INVALID_ARGUMENT', 401: 'UNAUTHENTICATED', 403: 'PER
 /**
  * @param {(call, state) => string | {status:number, error:string} | {text?:string, functionCalls?:[], finishReason?:string}} onGenerate
  */
-export function startGeminiMock(onGenerate, { model = 'gemini-3.8-flash' } = {}) {
+export function startGeminiMock(onGenerate, { model = 'gemini-2.5-flash-lite' } = {}) {
   const state = { calls: [], imageCalls: [], onImage: () => null, delayMs: 0, model, modelAvailable: true, keyValid: true, lastKey: null };
   const server = http.createServer((req, res) => {
     let raw = '';
@@ -113,6 +113,7 @@ export function startGeminiMock(onGenerate, { model = 'gemini-3.8-flash' } = {})
 export function useMock(state, extraEnv = {}) {
   process.env.GEMINI_API_KEY = MOCK_KEY;
   process.env.GEMINI_BASE_URL = state.url;
+  process.env.GEMINI_MODEL = state.model;
   process.env.SEARCH_PROVIDER = 'off';
   process.env.DB_PATH = process.env.DB_PATH || `${process.env.TMP || '/tmp'}/cf-test-${process.pid}.db`;
   Object.assign(process.env, extraEnv);

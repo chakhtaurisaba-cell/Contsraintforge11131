@@ -1,5 +1,5 @@
 // Card pictures from Google's image model (default gemini-nano-banana-2.1, via the Interactions
-// API of the official @google/genai SDK — gemini-3.8-flash itself does not generate images).
+// API of the official @google/genai SDK — the text model itself does not generate images).
 //
 // - One picture per idea, generated only when its card is on screen, never blocking the ideas.
 // - Cached by a hash of the idea (model, name, kind, summary, materials), in memory and in the

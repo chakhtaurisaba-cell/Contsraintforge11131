@@ -58,7 +58,8 @@ before(async () => {
       });
     }
     return '{}';
-  });
+    // This file runs on a Gemini 3 model, where thinkingLevel is sent (the 400 test strips it).
+  }, { model: 'gemini-3.8-flash' });
   useMock(mock);
   ideation = await import('../server/services/ideation.js');
 });

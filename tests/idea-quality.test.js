@@ -189,7 +189,9 @@ test('CASE A — 1 plastic bottle + tape, NO tools: no cutting at all, several d
   assert.equal(calls.length, 1, 'one structured Gemini call for all the ideas');
   assert.match(calls[0].messages.at(-1).content, /\[1\] Plastic bottle rolling pin hack/);
   assert.equal(mock.calls.length, 1, 'the typed inventory is parsed on the server — the ideas call is the only Gemini call');
-  assert.equal(calls[0].raw.generationConfig.thinkingConfig?.thinkingLevel, 'LOW', 'low thinking: the strict checks are deterministic');
+  assert.equal(calls[0].model, 'gemini-2.5-flash-lite');
+  assert.equal(calls[0].raw.generationConfig.thinkingConfig, undefined, 'Gemini 2.5 rejects thinkingLevel: no thinking setting is sent (Flash-Lite does not think by default)');
+  assert.ok(calls[0].raw.generationConfig.responseJsonSchema && calls[0].raw.generationConfig.responseMimeType === 'application/json', 'structured output is used as before');
   assert.deepEqual(r.ideas.find((i) => i.name === 'Bottle rolling pin').inspiration, [{ url: SEARCH_RESULTS[0].url, title: SEARCH_RESULTS[0].title }], 'source 99 does not exist');
   assert.ok(/without extra materials/.test(r.research.queries.join(' | ')), 'with no tools, research looks for projects that need nothing else');
 });
